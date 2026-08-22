@@ -7,8 +7,9 @@ import { createRegistry } from "../src/registry.mjs";
 import { createToolHandlers, TOOL_DEFINITIONS } from "../src/server.mjs";
 import { DEFAULTS } from "../src/config.mjs";
 
-// 測試自己帶 config 與 piDefaults：結果不該取決於這台機器上剛好存在的
-// ~/.claude/pi-delegate/config.json 或 ~/.pi/agent/settings.json。
+// Tests supply their own config and piDefaults: results must not depend on whatever
+// ~/.claude/pi-delegate/config.json or ~/.pi/agent/settings.json happens to exist on this
+// machine.
 const CONFIG = { ...DEFAULTS, drafter_patterns: [...DEFAULTS.drafter_patterns] };
 const NO_PI_DEFAULTS = { provider: null, model: null };
 
@@ -45,27 +46,27 @@ function fakeDispatch(verdict = okVerdict) {
   });
 }
 
-test("tool 說明不綁死任何一台機器的 provider / 模型 id", () => {
+test("tool descriptions are not welded to any one machine provider or model id", () => {
   const blob = JSON.stringify(TOOL_DEFINITIONS);
   for (const hardcoded of ["omlx", "Qwen", "gemma", "DFlash"]) {
-    assert.ok(!blob.includes(hardcoded), `tool 定義不該提到 ${hardcoded}`);
+    assert.ok(!blob.includes(hardcoded), `tool definitions should not mention ${hardcoded}`);
   }
 });
 
-test("pi_dispatch 的可調旗標都是選填參數，而且說明帶著實測理由", () => {
+test("every tunable pi_dispatch flag is an optional parameter whose description carries the measured rationale", () => {
   const dispatchTool = TOOL_DEFINITIONS.find((t) => t.name === "pi_dispatch");
   const props = dispatchTool.inputSchema.properties;
   for (const key of ["model", "provider", "thinking", "tools", "no_context_files", "append_system_prompt", "timeout_s"]) {
-    assert.ok(props[key], `缺少參數 ${key}`);
+    assert.ok(props[key], `missing parameter ${key}`);
   }
   assert.deepEqual(dispatchTool.inputSchema.required, ["task_file", "cwd"]);
-  // 呼叫端要知道「預設值是量出來的」才會刻意而非順手地覆寫
+  // The caller has to know the defaults were measured to override them deliberately
   assert.match(props.tools.description, /bash/);
   assert.match(props.thinking.description, /off/);
   assert.match(props.no_context_files.description, /\d+/);
 });
 
-test("TOOL_DEFINITIONS 定義了全部七個 tool", () => {
+test("TOOL_DEFINITIONS defines all seven tools", () => {
   const names = TOOL_DEFINITIONS.map((t) => t.name).sort();
   assert.deepEqual(names, [
     "pi_abort", "pi_dispatch", "pi_result", "pi_stats",
@@ -73,9 +74,9 @@ test("TOOL_DEFINITIONS 定義了全部七個 tool", () => {
   ]);
 });
 
-test("每個 tool 都有非空 description 與 inputSchema", () => {
+test("every tool has a non-empty description and an inputSchema", () => {
   for (const tool of TOOL_DEFINITIONS) {
-    assert.ok(tool.description?.length > 10, `${tool.name} description 太短`);
+    assert.ok(tool.description?.length > 10, `${tool.name} description is too short`);
     assert.equal(tool.inputSchema.type, "object");
   }
 });
@@ -122,8 +123,8 @@ test("派工給 drafter 模型會被拒絕且不呼叫 dispatch", async () => {
   assert.equal(called, false);
 });
 
-// drafter 守門的判準是 config 裡的 pattern，不是某一台機器上的模型 id
-test("drafter_patterns 清空後同一個 model 就派得出去", async () => {
+// The co-pilot guard keys off patterns in the config, not one machine model id
+test("clearing drafter_patterns lets the same model be dispatched to", async () => {
   const task = tmpFile("TASK.md");
   writeFileSync(task, "改 a.ts");
   const { handlers } = setup(fakeDispatch(), { ...CONFIG, drafter_patterns: [] });
@@ -133,12 +134,12 @@ test("drafter_patterns 清空後同一個 model 就派得出去", async () => {
   assert.equal(result.isError, undefined);
 });
 
-// --- provider-agnostic：什麼都不設定也要能派工 ---
+// --- provider-agnostic: dispatching must work with nothing configured ---
 //
-// 這是整輪改動的核心：使用者裝好外掛、什麼都不設定，pi_dispatch 就用他自己的 pi
-// 預設模型。dispatch() 收到的 provider / model 應該是 undefined（＝不帶旗標），
-// 而不是外掛自己發明的某個模型 id。
-test("沒有 config、沒有參數時 pi_dispatch 照樣派得出去，且不指定 provider / model", async () => {
+// This is the heart of the whole change: the user installs the plugin, configures nothing,
+// and pi_dispatch uses their own default pi model. What dispatch() receives for provider /
+// model should be undefined (i.e. emit no flag), not some model id the plugin invented.
+test("with no config and no arguments pi_dispatch still dispatches, specifying neither provider nor model", async () => {
   const task = tmpFile("TASK.md");
   writeFileSync(task, "改 a.ts");
   const seen = [];
@@ -152,7 +153,7 @@ test("沒有 config、沒有參數時 pi_dispatch 照樣派得出去，且不指
   assert.equal(seen[0].model, undefined);
 });
 
-test("pi_dispatch 的 provider / model / timeout_s 參數會傳給 dispatch", async () => {
+test("pi_dispatch passes its provider / model / timeout_s arguments through to dispatch", async () => {
   const task = tmpFile("TASK.md");
   writeFileSync(task, "改 a.ts");
   const seen = [];
@@ -169,8 +170,9 @@ test("pi_dispatch 的 provider / model / timeout_s 參數會傳給 dispatch", as
   assert.equal(seen[0].timeoutS, 7);
 });
 
-// schema 收了一個覆寫、handler 卻默默丟掉，正是這個 codebase 踩過五次的失敗形狀。
-test("thinking / tools / no_context_files / append_system_prompt 覆寫真的傳得到 dispatch", async () => {
+// A schema that accepts an override the handler then quietly drops is the failure shape
+// this codebase has hit five times.
+test("thinking / tools / no_context_files / append_system_prompt overrides really reach dispatch", async () => {
   const task = tmpFile("TASK.md");
   writeFileSync(task, "改 a.ts");
   const seen = [];
@@ -181,15 +183,15 @@ test("thinking / tools / no_context_files / append_system_prompt 覆寫真的傳
   await handlers.pi_dispatch({
     task_file: task, cwd: "/tmp", mode: "sync",
     thinking: "high", tools: "read,write,edit,bash",
-    no_context_files: false, append_system_prompt: "只准改指定的檔案",
+    no_context_files: false, append_system_prompt: "only touch the files named in the task book",
   });
   assert.equal(seen[0].thinking, "high");
   assert.equal(seen[0].tools, "read,write,edit,bash");
   assert.equal(seen[0].noContextFiles, false);
-  assert.equal(seen[0].appendSystemPrompt, "只准改指定的檔案");
+  assert.equal(seen[0].appendSystemPrompt, "only touch the files named in the task book");
 });
 
-test("config 的 timeout_s 在沒指定時生效", async () => {
+test("the config timeout_s applies when none is specified", async () => {
   const task = tmpFile("TASK.md");
   writeFileSync(task, "改 a.ts");
   const seen = [];
@@ -344,7 +346,7 @@ test("pi_steer 把訊息送進 handle.steer", async () => {
   const sessionId = await dispatchAndGetSessionId(handlers, task);
   const result = await handlers.pi_steer({ session_id: sessionId, message: "改用 async/await" });
   assert.deepEqual(steerCalls, ["改用 async/await"]);
-  assert.match(result.content[0].text, /已送出/);
+  assert.match(result.content[0].text, /Sent:/);
 });
 
 test("pi_steer 對未知 session_id 回錯誤", async () => {
@@ -375,7 +377,7 @@ test("pi_abort 呼叫 handle.abort", async () => {
   const sessionId = await dispatchAndGetSessionId(handlers, task);
   const result = await handlers.pi_abort({ session_id: sessionId });
   assert.equal(abortCalled, 1);
-  assert.match(result.content[0].text, /已中止/);
+  assert.match(result.content[0].text, /Aborted /);
 });
 
 test("pi_abort 對未知 session_id 回錯誤", async () => {
@@ -426,7 +428,7 @@ test("pi_transcript 在 handle 沒有 events 時退回空陣列", async () => {
   const { handlers } = setup(fakeDispatch());
   const sessionId = await dispatchAndGetSessionId(handlers, task);
   const result = await handlers.pi_transcript({ session_id: sessionId, filter: "text" });
-  assert.equal(result.content[0].text, "(無文字輸出)");
+  assert.equal(result.content[0].text, "(no text output)");
 });
 
 test("pi_transcript 對未知 session_id 回錯誤", async () => {
@@ -580,17 +582,18 @@ test("session_id 撞號時不會先 spawn 子行程", async () => {
   assert.equal(spawned, 0, "registry.add 失敗時不該已經 spawn 出 pi 子行程");
 });
 
-// --- registry.add 佔位到 spawn 之間的 handle 空窗 ---
+// --- The handle window between registry.add and the spawn ---
 //
-// pi_dispatch 先 `registry.add({handle: null, …})` 再 `await dispatchFn(...)`。
-// 那個 await 會把控制權交回 event loop，所以「session 已註冊、handle 還是 null」
-// 是一段**真實存在**的窗口（舊註解宣稱「中間沒有 await，其他 tool 進不來」是錯的）。
-// 在這個窗口裡，pi_steer / pi_abort / pi_transcript 以前會直接
-// `entry.handle.steer(...)` 而拋 TypeError: Cannot read properties of null，
-// 使用者拿到的是一句沒有線索的例外。
-test("spawn 還沒完成時，pi_steer / pi_abort / pi_transcript 回可讀的錯誤而不是 TypeError", async () => {
+// pi_dispatch calls `registry.add({handle: null, …})` first and only then
+// `await dispatchFn(...)`. That await hands control back to the event loop, so
+// "session registered, handle still null" is a REAL window (the old comment claimed there
+// was no await in between and no other tool could get in — that was wrong).
+// Inside that window pi_steer / pi_abort / pi_transcript used to call
+// `entry.handle.steer(...)` directly and throw
+// TypeError: Cannot read properties of null, leaving the user with a clueless exception.
+test("while the spawn is pending, pi_steer / pi_abort / pi_transcript return a readable error rather than a TypeError", async () => {
   const task = tmpFile("TASK.md");
-  writeFileSync(task, "改 a.ts");
+  writeFileSync(task, "edit a.ts");
 
   let releaseSpawn;
   const spawnGate = new Promise((resolve) => {
@@ -604,23 +607,36 @@ test("spawn 還沒完成時，pi_steer / pi_abort / pi_transcript 回可讀的�
     };
   };
 
-  const { handlers } = setup(dispatchFn);
-  const pending = handlers.pi_dispatch({ task_file: task, cwd: "/tmp", mode: "async" });
-  // dispatchFn 卡在 spawnGate 上：這時 registry 裡已經有 entry，但 handle 還是 null。
-  await new Promise((resolve) => setImmediate(resolve));
+  // Capture the generated session id straight off registry.add, so this test does not
+  // depend on the wording of any user-facing message.
+  const registry = createRegistry();
+  let sessionId = null;
+  const handlers = createToolHandlers({
+    registry: {
+      ...registry,
+      add(id, entry) {
+        sessionId = id;
+        return registry.add(id, entry);
+      },
+    },
+    dispatchFn,
+    eventsLogPath: tmpFile("events.log"),
+    gitDiffStatFn: () => "",
+    config: CONFIG,
+    piDefaults: NO_PI_DEFAULTS,
+  });
 
-  const registryIds = [];
+  const pending = handlers.pi_dispatch({ task_file: task, cwd: "/tmp", mode: "async" });
+  // dispatchFn is parked on spawnGate: the registry entry exists but handle is still null.
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(sessionId, "registry.add should have run before the spawn");
+
   for (const tool of ["pi_steer", "pi_abort", "pi_transcript"]) {
-    // session id 是 pi_dispatch 內部產生的，這裡從錯誤訊息裡撈出唯一一個有效 id
-    const ghost = await handlers[tool]({ session_id: "ghost", message: "x" });
-    const id = ghost.content[0].text.match(/目前有效的：(\S+)/)[1];
-    registryIds.push(id);
-    const result = await handlers[tool]({ session_id: id, message: "往左一點" });
-    assert.equal(result.isError, true, `${tool} 應回報錯誤`);
-    assert.match(result.content[0].text, /啟動中/, `${tool} 的訊息要說明原因`);
-    assert.ok(!result.content[0].text.includes("Cannot read properties"), `${tool} 不該拋 TypeError`);
+    const result = await handlers[tool]({ session_id: sessionId, message: "nudge left" });
+    assert.equal(result.isError, true, `${tool} should report an error`);
+    assert.match(result.content[0].text, /still starting up/, `${tool} should explain why`);
+    assert.ok(!result.content[0].text.includes("Cannot read properties"), `${tool} must not throw a TypeError`);
   }
-  assert.ok(registryIds.every((id) => id === registryIds[0]));
 
   releaseSpawn();
   await pending;
