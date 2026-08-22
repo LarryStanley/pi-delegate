@@ -9,6 +9,7 @@ import { createRegistry } from "./registry.mjs";
 import { serve } from "./stdio-server.mjs";
 import { formatVerdict, assistantText, writtenPaths, progressSummary, collapseRepeats } from "./verdict.mjs";
 import { loadConfig, loadPiDefaults, isDrafterModel } from "./config.mjs";
+import { formatToolCalls, formatLastN, capped } from "./transcript.mjs";
 import { eventsLogPath as sessionEventsLogPath } from "./events-log.mjs";
 
 // Re-exported so existing callers keep one import site; the reasoning for the per-session
@@ -396,15 +397,11 @@ export function createToolHandlers({
         const notReady = requireHandle(entry, session_id);
         if (notReady) return notReady;
         const events = entry.handle?.events ?? [];
-        if (filter === "tools") {
-          const calls = events
-            .filter((e) => e.type === "tool_execution_start")
-            .map((e) => `${e.toolName} ${JSON.stringify(e.args)}`);
-          return text(calls.join("\n") || "(no tool calls)");
-        }
-        if (filter === "last_n") {
-          return text(events.slice(-n).map((e) => JSON.stringify(e)).join("\n") || "(no events)");
-        }
+        // All three filters are budgeted. This tool is the one place that used to hand pi's
+        // raw output straight back to the caller, which inverts the whole point of
+        // delegating: see the header of src/transcript.mjs.
+        if (filter === "tools") return text(formatToolCalls(events));
+        if (filter === "last_n") return text(formatLastN(events, n));
         // Uses the same parser as verdict.mjs: an earlier version here recognized only
         // array-shaped content, so a string-shaped-content message would show up in the
         // verdict but go missing from the transcript.
@@ -412,7 +409,7 @@ export function createToolHandlers({
           .filter((e) => e.type === "message_end")
           .map((e) => assistantText(e.message))
           .filter((t) => t !== "");
-        return text(said.join("\n---\n") || "(no text output)");
+        return text(capped(said.join("\n---\n") || "(no text output)"));
       });
     },
 
