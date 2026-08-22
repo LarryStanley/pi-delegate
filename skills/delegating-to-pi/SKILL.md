@@ -121,6 +121,7 @@ Use `/pi-delegate:probe` to get a one-time bypass for a probe.
 | `references/task-books.md` | Writing a task book, or when the output followed it exactly but is still wrong |
 | `references/verifying.md` | Acceptance review, or a second layer of review |
 | `references/choosing-models.md` | Timeouts with zero output, or choosing a model |
+| `references/small-model-field-guide.md` | Shortlisting a new model, sizing hardware, or choosing a quantization — published guidance, to be verified rather than trusted |
 | `references/orchestration.md` | Fan-out, deciding concurrency width |
 | `references/diagnosing.md` | Wrong output and you're not sure what to adjust — a symptom lookup table |
 

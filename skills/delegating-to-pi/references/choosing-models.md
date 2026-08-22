@@ -7,6 +7,10 @@ getting that order backwards will judge a genuinely usable model as unusable.
 
 ← back to `SKILL.md` (the four-way split and the discipline table)
 
+For shortlisting a model you have not run yet — published reliability numbers, quantization floors, and the
+failure-compounding arithmetic that explains long-loop failures — see `small-model-field-guide.md`. That file is
+secondhand by design; this one is for what you verify yourself.
+
 ## Pick the harness first, then the model — this order cannot be reversed
 
 **The harness's weight determines which models can even work.** Same model, same task, same endpoint, only the harness changed:
