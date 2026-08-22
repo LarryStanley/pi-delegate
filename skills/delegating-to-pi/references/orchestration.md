@@ -1,5 +1,11 @@
 # The Mechanics of Dispatch: Flags, Width, Timeouts
 
+> **Read this for fan-out — many dispatches at once — not for sizing a single one.** Since `pi_dispatch` defaults
+> to `mode=async`, one dispatch needs no orchestration at all: send it, keep working, poll `pi_status`, collect
+> with `pi_result`. The shell-side width loops below predate that and are for driving a batch of tasks from a
+> script. Never reach for a batch as a way to make one task smaller — that is the mistake the sizing section of
+> SKILL.md measures.
+
 > **The `dispatch-pi.sh` / `run-queue.ps1` plugin referenced in this document is not shipped here.**
 > They were the environment that produced these measured numbers (old hand-written scripts) — the text and the numbers are kept as-is because they're the evidence.
 > The equivalent in pi-delegate is the MCP tools: `pi_dispatch` for a single dispatch,
@@ -146,7 +152,7 @@ depends on task weight.** Same day, width 8, running 29 **heavy tasks** (each ed
 deleting the same number of CSS lines):
 
 - The endpoint's generation throughput dropped from about **50 tok/s to 14.6 tok/s** (as seen from the server side)
-- **5 of the 29 hit `timeout 1500`**, and 2 of those left **half-edited files** behind
+- **5 of the 29 hit the timeout** (1500s at the time; the default is now 1200s), and 2 of those left **half-edited files** behind
 - Wall time 2772 seconds
 
 **Heavy tasks need width dropped to 2–3.** Don't judge "heavy" by file line count — judge it by **how much it

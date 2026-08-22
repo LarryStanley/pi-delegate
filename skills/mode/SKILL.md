@@ -44,18 +44,35 @@ hand?*
 Typical answers, as a starting point and not a lookup table — the repo in front of you
 wins over any of them:
 
-| Layout | Usually protect | Usually allow (exceptions) |
-|---|---|---|
-| Node / TS | `src/**` | `src/**/*.test.ts`, generated clients |
-| Go | `internal/**`, `cmd/**`, `pkg/**` | `**/*_test.go`, `**/*.pb.go` |
-| Rust | `src/**/*.rs` | `src/**/tests/**` |
-| Python (`<pkg>/`) | `<pkg>/**/*.py` | `**/conftest.py`, `**/test_*.py` |
-| Elixir | `lib/**` | `test/**` |
+| Layout | Usually protect |
+|---|---|
+| Node / TS | `src/**` |
+| Go | `internal/**`, `cmd/**`, `pkg/**` |
+| Rust | `src/**/*.rs` |
+| Python (`<pkg>/`) | `<pkg>/**/*.py` |
+| Elixir | `lib/**` |
 
-Things that are **not** product source and should stay writable: docs, config, migrations
-you hand-write, fixtures, scripts, and anything generated (`*.pb.go`, `*_pb2.py`,
-`src/generated/**`, snapshots). Getting these wrong is what makes someone switch strict off
-entirely rather than live with it.
+**Test files are NOT an exception. Do not put them in `allow`.** They are the single
+biggest block of characters in most repos, and dispatching them is the plugin's whole
+premise — the skill's rule is structural, not about judgment: *is this a character that
+gets committed? then pi writes it*, implementation and tests alike. Exempting tests looks
+reasonable ("the test is the spec, so I should write it") and quietly hands the largest
+share of the work straight back to hand-typing. That is the exact leak strict exists to
+close: with a written rule in place and no enforcement, roughly 80% of committed characters
+were still typed by the main model.
+
+If you want to fix the contract before pi implements it, the contract belongs **in the task
+book** — prose you write, not a file that gets committed. And an acceptance test you run
+yourself to judge the result is fine too, because it is a throwaway you never commit. What
+must not happen is `src/**/*.test.ts` landing in the repo from your own keyboard.
+
+`allow` is for things that are **not hand-written source at all**: generated code
+(`*.pb.go`, `*_pb2.py`, `src/generated/**`, snapshots) and framework shells that are
+config in disguise (`src/app.d.ts`, `src/app.html`, a vitest setup file). Getting *these*
+wrong is what makes someone switch strict off entirely rather than live with it.
+
+Paths that are simply outside the protected globs — docs, config, migrations you hand-write
+by policy, fixtures, scripts — need no `allow` entry at all; they were never protected.
 
 **2. Show the user what you propose, and why.** List the `protect` globs and the `allow`
 globs, each with a one-line reason, and name anything you were unsure about. Patterns are
@@ -72,14 +89,26 @@ which files it may edit.
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/bin/pi-mode" strict \
   --protect "internal/**,cmd/**/*.go" \
-  --allow "**/*_test.go"
+  --allow "**/*.pb.go"
 ```
+
+Note what is and is not in that `--allow`: generated protobuf output, yes; `**/*_test.go`,
+no. Tests are dispatched like everything else.
+
+`--allow` is optional — a policy with no exceptions at all is the common case, and the
+better default. Omit it unless the repo actually contains generated or shell files inside
+the protected globs.
 
 The command prints back the mode, the project root, and the stored policy. Show that
 output — it is the user's confirmation that what landed is what they agreed to.
 
 To go back to the built-in heuristic, `--clear-policy` removes the stored lists. The policy
 survives a switch to `soft` and back, so nobody has to redo the survey to toggle the mode.
+
+**Correcting a policy already in place**: re-run the command with the full lists you want.
+`--protect` and `--allow` replace what is stored, they do not merge — so to drop an
+exception, simply re-issue the policy without it (`--allow ""` clears the exceptions while
+keeping the protected globs).
 
 ## What strict can and cannot do
 

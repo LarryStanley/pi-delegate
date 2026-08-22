@@ -148,7 +148,9 @@ echo "$DIR"
 
 Then call the `pi_dispatch` tool yourself with `task_file` set to `<DIR>/TASK.md`, `cwd` set
 to `<DIR>`, and `mode=sync` — leave `provider` / `model` unset so it exercises the exact same
-resolution path a real dispatch would use. Report the verdict plainly: status, files written,
+resolution path a real dispatch would use. `sync` is deliberate here even though async is
+the normal default: this one call exists so the user watches it finish, and there is nothing
+else to get on with while it runs. Report the verdict plainly: status, files written,
 duration. To show the user it's real, not just claimed:
 
 ```bash

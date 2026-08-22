@@ -1,4 +1,4 @@
-# Task Books: Probe → Recipe → Slice
+# Task Books: Probe → Recipe → Scope
 
 **When to read this**: you're writing a task book, deciding how finely to slice, or the output **followed the task
 book exactly and is still wrong**.
@@ -272,9 +272,21 @@ Three more points:
   (including startup), and multiply by "how many times it will run." On a project where one cold vitest start is
   80 seconds, a `--max-time` of 15 minutes won't be enough.
 
-## Slicing: smaller than you think
+## Slicing: by what it must READ, never by what it must produce
 
-"One process per file" is a **floor, not the answer.** Measured breakpoints:
+This section is about **input size** — how many characters pi has to read before it can start working. That is a
+real, measured ceiling and slicing against it works.
+
+**It is not a licence to slice by output scope**, and the two get confused constantly. Measured the other way
+(2026-08-22): the same job dispatched whole (three files, implementation plus tests) against the same job sliced
+down to a single 30-line file. The whole version wrote exactly the two files it managed, and they passed all nine
+acceptance tests. The sliced version finished its 30 lines, had nothing left to do, and spent the rest of its
+budget rewriting a scratch file — 22 writes, 21 of them the same path, **12x the input tokens**, plus a file the
+task book had explicitly forbidden. See the sizing section of SKILL.md.
+
+So: a task that must READ a 1000-line file needs slicing. A task that must PRODUCE three files does not.
+
+"One process per file" is a **floor, not the answer.** Measured breakpoints, all of them about reading:
 
 | Source file size | Result |
 |---|---|

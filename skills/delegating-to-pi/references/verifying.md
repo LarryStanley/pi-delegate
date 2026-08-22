@@ -357,7 +357,7 @@ red count in this repo jumps from 4 to 27 (`process.env` interference across fil
 
 ### "Timed out" doesn't mean "did nothing" — check whether the file moved first
 
-Measured (2026-08-20, a batch of 29 conversion tasks): two hit `timeout 1500`, and their states were **not the same**:
+Measured (2026-08-20, a batch of 29 conversion tasks): two hit the timeout (1500s then; 1200s now), and their states were **not the same**:
 
 | Task | File state | Handling |
 |---|---|---|
