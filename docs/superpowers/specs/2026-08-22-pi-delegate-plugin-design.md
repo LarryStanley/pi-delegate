@@ -1,5 +1,10 @@
 # pi-delegate：把「派工給 pi」從 skill 轉成 Claude Code Plugin
 
+> **歷史文件（2026-08-22）。** 這份 spec/plan 記錄的是 v0.1.0 當時的設計，其中把 provider 寫死成
+> 一台本機 omlx 伺服器、把兩個 Qwen 模型 id 當成必要模型的部分**已經不是現況**。
+> 現在的行為（三層 provider / model 解析、顧問式 pi-doctor）見 `docs/publish-prep-report.md`
+> 與 `README.md`。原文保留是為了留下當初的決策理由。
+
 > 設計日期：2026-08-22
 > 狀態：待實作
 > 前身：`delegating-to-pi` skill（148 行 SKILL.md ＋ 約 1400 行 references ＋ 5 支 bash/ps1）
@@ -242,7 +247,7 @@ last_message:           <最後一則 assistant 訊息，截斷 1000 字元>
 `~/.claude/pi-delegate/modes.json`，key 為專案絕對路徑：
 
 ```json
-{ "/Users/stanley/Code/foo": "strict", "/Users/stanley/Code/bar": "off" }
+{ "/path/to/project-a": "strict", "/path/to/project-b": "off" }
 ```
 
 未列出的專案預設 `soft`。放家目錄而非 repo：不污染專案、不必 gitignore。代價是換機器要重設一次（已接受）。

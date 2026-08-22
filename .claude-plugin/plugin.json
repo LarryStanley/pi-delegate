@@ -1,6 +1,6 @@
 {
   "name": "pi-delegate",
   "version": "0.1.0",
-  "description": "把實作與測試派給本機 pi（Qwen3.8 on omlx），並強制執行派工紀律",
+  "description": "把實作與測試派給本機 pi agent（用你自己的 pi provider / 模型），並強制執行派工紀律",
   "author": { "name": "stanley" }
 }

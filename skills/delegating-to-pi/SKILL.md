@@ -1,5 +1,5 @@
 ---
-description: Use when delegating coding work to the local pi agent (Qwen3.8 on omlx) to cut cost, or when you are about to hand-write source or test files yourself instead of specifying them, or when a small-model agent reads files endlessly without ever writing, times out having produced nothing, or keeps reasoning forever even though thinking was turned off.
+description: Use when delegating coding work to the local pi agent to cut cost, or when you are about to hand-write source or test files yourself instead of specifying them, or when a small-model agent reads files endlessly without ever writing, times out having produced nothing, or keeps reasoning forever even though thinking was turned off.
 ---
 
 # 派工給 pi
@@ -44,7 +44,15 @@ description: Use when delegating coding work to the local pi agent (Qwen3.8 on o
 （帶那份會紅的測試 ＋「不准改測試」）。同一份任務書裡同時要測試與實作，
 它會寫出剛好讓自己通過的測試。
 
-**模型選擇**：編輯既有檔案一律 dense（預設）。只有從零寫新檔案才值得換 MoE 換速度。
+**模型選擇**：不指定就用使用者自己的 pi 預設模型（`~/.pi/agent/settings.json`）——
+絕大多數情況就這樣。真的要換才用 `pi_dispatch` 的 `provider` / `model` 參數，
+而且兩個要一起給（pi 只認成對的覆寫）。挑模型的判準見
+`references/choosing-models.md`：編輯既有檔案一律 dense，只有從零寫新檔案才值得換
+MoE 換速度。
+
+**`pi_dispatch` 的其他旗標有量出來的預設**：`thinking=off`、`tools=read,write,edit`、
+`no_context_files=true`。要覆寫請刻意 —— 每個預設值背後都有一次「不這樣做就逾時零產出」
+的實測（理由寫在 tool 說明裡）。
 
 ## 模式
 
