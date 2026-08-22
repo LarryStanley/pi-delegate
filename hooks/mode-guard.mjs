@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { getMode } from "../src/modes.mjs";
+import { getMode, getPolicy } from "../src/modes.mjs";
 import { isProtectedPath, consumeProbe, projectRootForFile, projectRootForDir } from "../src/guard.mjs";
 
 async function readStdin() {
@@ -43,7 +43,7 @@ if (!filePath) process.exit(0);
 const root = projectRootForFile(filePath) ?? (input.cwd ?? process.cwd());
 if (getMode(root) !== "strict") process.exit(0);
 
-if (!isProtectedPath(filePath, { cwd: root })) process.exit(0);
+if (!isProtectedPath(filePath, { cwd: root, policy: getPolicy(root) })) process.exit(0);
 
 if (consumeProbe()) {
   console.log(JSON.stringify({ systemMessage: `Probe allowed this write: ${filePath} (flag consumed)` }));

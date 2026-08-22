@@ -14,7 +14,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { setMode } from "../src/modes.mjs";
+import { setMode, setPolicy } from "../src/modes.mjs";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const MODE_GUARD = join(REPO_ROOT, "hooks", "mode-guard.mjs");
@@ -309,4 +309,83 @@ test("mode-guard: strict still applies to a file edited from a subdirectory of i
 
   assert.equal(result.status, 0);
   assert.match(result.stdout, /"permissionDecision":"deny"/);
+});
+
+// ---- an explicit per-project policy replaces the built-in src/ heuristic ----
+// The heuristic only ever fitted one project shape. On a Go tree it protected nothing and
+// said nothing about it, so strict looked switched on and was not.
+
+function goProject(home) {
+  const project = tmpProject();
+  writeFileSync(join(project, "go.mod"), "module x\n");
+  mkdirSync(join(project, "internal", "svc"), { recursive: true });
+  mkdirSync(join(project, "cmd"), { recursive: true });
+  writeFileSync(join(project, "internal", "svc", "a.go"), "package svc\n");
+  writeFileSync(join(project, "internal", "svc", "a_test.go"), "package svc\n");
+  writeFileSync(join(project, "cmd", "main.go"), "package main\n");
+  setMode(project, "strict", stateFileFor(home));
+  return project;
+}
+
+const guardVerdict = (project, home, filePath) =>
+  runHook(MODE_GUARD, {
+    cwd: project, home,
+    stdin: JSON.stringify({ cwd: project, tool_input: { file_path: filePath } }),
+  }).stdout.trim();
+
+test("mode-guard: without a policy, a strict Go project is protected by nothing at all", () => {
+  const home = tmpHome();
+  const project = goProject(home);
+  // Documents the gap the policy exists to close — not an endorsement of it.
+  assert.equal(guardVerdict(project, home, join(project, "internal", "svc", "a.go")), "");
+});
+
+test("mode-guard: a policy protects the paths it names, whatever the language", () => {
+  const home = tmpHome();
+  const project = goProject(home);
+  setPolicy(project, { protect: ["internal/**", "cmd/**/*.go"], allow: ["**/*_test.go"] }, stateFileFor(home));
+
+  assert.match(guardVerdict(project, home, join(project, "internal", "svc", "a.go")), /"permissionDecision":"deny"/);
+  assert.match(guardVerdict(project, home, join(project, "cmd", "main.go")), /"permissionDecision":"deny"/);
+});
+
+test("mode-guard: an allow pattern carves an exception out of a protected tree", () => {
+  const home = tmpHome();
+  const project = goProject(home);
+  setPolicy(project, { protect: ["internal/**"], allow: ["**/*_test.go"] }, stateFileFor(home));
+
+  assert.equal(guardVerdict(project, home, join(project, "internal", "svc", "a_test.go")), "");
+});
+
+test("mode-guard: a policy leaves paths it never names alone", () => {
+  const home = tmpHome();
+  const project = goProject(home);
+  setPolicy(project, { protect: ["internal/**"] }, stateFileFor(home));
+  mkdirSync(join(project, "docs"), { recursive: true });
+  const doc = join(project, "docs", "x.md");
+  writeFileSync(doc, "# d\n");
+
+  assert.equal(guardVerdict(project, home, doc), "");
+});
+
+test("mode-guard: a policy still lets brand-new files through", () => {
+  const home = tmpHome();
+  const project = goProject(home);
+  setPolicy(project, { protect: ["internal/**"] }, stateFileFor(home));
+
+  // Never written to disk: writing a file from scratch is the shape pi is best at, and
+  // that stays true whoever authored the policy.
+  assert.equal(guardVerdict(project, home, join(project, "internal", "svc", "brand-new.go")), "");
+});
+
+test("mode-guard: switching mode away and back keeps the reviewed policy", () => {
+  const home = tmpHome();
+  const project = goProject(home);
+  setPolicy(project, { protect: ["internal/**"] }, stateFileFor(home));
+  setMode(project, "soft", stateFileFor(home));
+  setMode(project, "strict", stateFileFor(home));
+
+  // Losing the policy on a mode toggle would mean redoing the survey, which is how people
+  // end up leaving strict off instead.
+  assert.match(guardVerdict(project, home, join(project, "internal", "svc", "a.go")), /"permissionDecision":"deny"/);
 });

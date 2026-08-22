@@ -74,6 +74,12 @@ anything:
 The mode is stored against the project root and applied by the edited file's project
 root, so it follows the project rather than your session's working directory.
 
+If the user picks `strict`, do NOT just run the command — `strict` needs to know what to
+protect, and its built-in fallback only fits a `src/` directory of TS/JS/Svelte/Python
+files. Follow `/pi-delegate:mode`'s "Setting `strict`: survey the project first" section:
+survey the layout, propose `protect` / `allow` globs with reasons, wait for the user to
+approve them, and only then write the policy.
+
 "Existing product code" means a file that already exists under the project's `src/`;
 `tasks/`, `scripts/`, `docs/`, markdown, config files, and brand-new files are always
 allowed through regardless of mode.

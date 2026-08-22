@@ -8,18 +8,42 @@
 // drive letter as a URL scheme. A file the loader resolves relative to itself has no such
 // problem, so the plugin root only ever has to reach a script path — never an import
 // specifier.
-import { MODES, getMode, setMode } from "../src/modes.mjs";
+import { MODES, getMode, setMode, getPolicy, setPolicy, clearPolicy } from "../src/modes.mjs";
 import { projectRootForDir } from "../src/guard.mjs";
 
-const requested = process.argv[2];
+// --protect / --allow take comma-separated globs relative to the project root, e.g.
+//   pi-mode strict --protect "internal/**,cmd/**/*.go" --allow "**/*_test.go"
+// Written only through the guided /pi-delegate:mode flow, where the survey is shown to the
+// user and approved before it lands.
+const argv = process.argv.slice(2);
+const listFlag = (name) => {
+  const i = argv.indexOf(`--${name}`);
+  if (i === -1) return null;
+  return String(argv[i + 1] ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+};
+const protect = listFlag("protect");
+const allow = listFlag("allow") ?? [];
+const clearing = argv.includes("--clear-policy");
+
+const requested = argv.find((a) => !a.startsWith("--") && argv[argv.indexOf(a) - 1]?.startsWith("--") !== true);
 
 // Record against the project root, not the directory you happen to be standing in. The
 // hook looks the mode up by the edited file's project root, and getMode() is an exact key
 // lookup — so a mode set from `src/deep` under the raw cwd would simply never be found.
 const project = projectRootForDir(process.cwd());
 
-if (!requested) {
+function describePolicy() {
+  const policy = getPolicy(project);
+  if (!policy) {
+    return "  policy:  (none — falling back to the built-in src/ heuristic, which only fits\n           a TS/JS/Svelte/Python project with a src/ directory)";
+  }
+  const allowLine = policy.allow.length > 0 ? `\n  allow:   ${policy.allow.join(", ")}` : "";
+  return `  protect: ${policy.protect.join(", ")}${allowLine}`;
+}
+
+if (!requested && !protect && !clearing) {
   console.log(`Current mode: ${getMode(project)} (${project})`);
+  console.log(describePolicy());
   process.exit(0);
 }
 
@@ -28,5 +52,17 @@ if (!MODES.includes(requested)) {
   process.exit(1);
 }
 
-setMode(project, requested);
+if (requested) setMode(project, requested);
+
+if (clearing) {
+  clearPolicy(project);
+} else if (protect) {
+  if (protect.length === 0) {
+    console.error("--protect needs at least one pattern");
+    process.exit(1);
+  }
+  setPolicy(project, { protect, allow });
+}
+
 console.log(`Mode set to ${getMode(project)} (${project})`);
+console.log(describePolicy());

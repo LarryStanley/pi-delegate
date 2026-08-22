@@ -1,6 +1,7 @@
 import { existsSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, relative, resolve, dirname, extname, basename, sep } from "node:path";
+import { matchesAny } from "./glob.mjs";
 
 const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".svelte", ".py"]);
 const EXEMPT_PREFIXES = ["tasks/", "scripts/", "docs/"];
@@ -94,12 +95,29 @@ export function normalizeRelSeparators(rel, platformSep = sep) {
   return platformSep === "\\" ? rel.replaceAll("\\", "/") : rel;
 }
 
-export function isProtectedPath(filePath, { cwd, exists = existsSync, markerExists = existsSync } = {}) {
+export function isProtectedPath(filePath, { cwd, policy = null, exists = existsSync, markerExists = existsSync } = {}) {
   const root = findProjectRoot(cwd, markerExists);
   const base = root ?? cwd;
   const rel = relative(base, filePath);
   if (rel.startsWith("..")) return false;
   if (basename(filePath).startsWith(".")) return false;
+
+  // An explicit policy replaces the built-in heuristic entirely, rather than layering on
+  // top of it. The heuristic only ever fitted one project shape (a `src/` directory of
+  // TS/JS/Svelte/Python), so on a Go, Rust, or Elixir tree it protected nothing at all and
+  // said nothing about it. A project that has been surveyed states its own answer, and
+  // intersecting that with a rule written for someone else's layout would only reintroduce
+  // the same blind spots.
+  //
+  // Two things stay outside the policy's reach because they are properties of the
+  // workflow, not of the project's shape: a brand-new file is always allowed (writing one
+  // from scratch is the shape pi is best at), and only Write/Edit reach this code at all.
+  if (policy) {
+    const relPath = normalizeRelSeparators(rel);
+    if (!matchesAny(relPath, policy.protect)) return false;
+    if (matchesAny(relPath, policy.allow)) return false;
+    return exists(filePath);
+  }
 
   // macOS's APFS is case-insensitive by default: `SRC/foo.ts` and `src/foo.ts` are the
   // same file, and so are `foo.TS` and `foo.ts` — but `startsWith("src/")` and the
