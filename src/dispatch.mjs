@@ -62,10 +62,30 @@ export async function dispatch({
   const startedAt = Date.now();
   let aborted = false;
   let timedOut = false;
+  // `child.killed` only reflects whether kill() successfully *sent* a signal,
+  // not whether the process actually died — it flips true the instant
+  // SIGTERM is sent, so `child.killed || child.kill("SIGKILL")` always
+  // short-circuits and SIGKILL never fires against a child that ignores or
+  // traps SIGTERM. Track real termination ourselves via the "exit" event
+  // (fires as soon as the process has actually exited, ahead of "close"
+  // which waits on stdio) and gate escalation on that instead.
+  let terminated = false;
+  let graceTimer = null;
   let settledResolve;
   const settledPromise = new Promise((resolve) => {
     settledResolve = resolve;
   });
+
+  child.on("exit", () => {
+    terminated = true;
+  });
+
+  function killWithEscalation() {
+    child.kill("SIGTERM");
+    graceTimer = setTimeout(() => {
+      if (!terminated) child.kill("SIGKILL");
+    }, KILL_GRACE_MS);
+  }
 
   const push = createJsonlSplitter();
   child.stdout.setEncoding("utf8");
@@ -87,18 +107,24 @@ export async function dispatch({
 
   const timer = setTimeout(() => {
     timedOut = true;
-    child.kill("SIGTERM");
-    setTimeout(() => child.killed || child.kill("SIGKILL"), KILL_GRACE_MS);
+    killWithEscalation();
   }, timeoutS * 1000);
 
   function send(command_) {
     if (child.stdin.writable) child.stdin.write(`${JSON.stringify(command_)}\n`);
   }
 
+  // 子行程可能在我們判斷 `writable` 之後、實際 write() 之前就死掉（race）；
+  // 沒有這個監聽器，未處理的 EPIPE 'error' 會直接讓 host process crash。
+  child.stdin.on("error", () => {
+    // 忽略：子行程已死或 stdin 已關閉，讓 close/exit 事件走判決流程即可。
+  });
+
   send({ type: "prompt", message: `讀取 ${taskFile} 並照著做。` });
 
   child.on("close", (exitCode) => {
     clearTimeout(timer);
+    if (graceTimer) clearTimeout(graceTimer);
     settledResolve(
       computeVerdict({
         events,
@@ -115,11 +141,12 @@ export async function dispatch({
 
   child.on("error", (error) => {
     clearTimeout(timer);
+    if (graceTimer) clearTimeout(graceTimer);
     stderr += String(error);
     settledResolve(
       computeVerdict({
         events, aborted, timedOut: false, exitCode: null,
-        requestedFiles: [], gitDiffStat,
+        requestedFiles: extractRequestedFiles(taskFile), gitDiffStat,
         durationS: Math.round((Date.now() - startedAt) / 1000),
         sessionId,
       }),
@@ -134,13 +161,12 @@ export async function dispatch({
     async abort() {
       aborted = true;
       send({ type: "abort" });
-      child.kill("SIGTERM");
-      setTimeout(() => child.killed || child.kill("SIGKILL"), KILL_GRACE_MS);
+      killWithEscalation();
     },
     state() {
       return {
         session_id: sessionId,
-        running: child.exitCode === null && !child.killed,
+        running: !terminated,
         elapsed_s: Math.round((Date.now() - startedAt) / 1000),
         event_count: events.length,
         stderr_tail: stderr.slice(-500),

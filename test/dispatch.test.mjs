@@ -104,3 +104,13 @@ test("steer 會把訊息送進子行程的 stdin", async () => {
   const verdict = await done;
   assert.ok(verdict.last_message.includes("往左一點"));
 });
+
+test("子行程忽略 SIGTERM 時，逾時仍靠 SIGKILL escalation 結束並回傳 timeout", async () => {
+  const { dir, file } = tmpTask();
+  const { done } = await dispatch({
+    taskFile: file, cwd: dir, model: "M", timeoutS: 1,
+    sessionId: "s6", piCommand: [...FAKE_PI, "--ignore-sigterm"], gitDiffStat: "",
+  });
+  const verdict = await done;
+  assert.equal(verdict.status, "timeout");
+});

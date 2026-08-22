@@ -11,7 +11,13 @@ const emit = (event) => process.stdout.write(`${JSON.stringify(event)}\n`);
 
 emit({ type: "session", version: 3, id: "fake", cwd: process.cwd() });
 
-if (has("--hang")) {
+if (has("--ignore-sigterm")) {
+  // 吃掉 SIGTERM，逼 dispatch() 的逾時/中止邏輯必須真的送出 SIGKILL 才能
+  // 結束這個子行程 —— 用來驗證 grace-period escalation 有沒有被
+  // child.killed 誤判短路掉。SIGKILL 本身不能被攔截，所以最終還是會死。
+  process.on("SIGTERM", () => {});
+  setInterval(() => {}, 1000);
+} else if (has("--hang")) {
   // 永不結束，等待被 kill 或 abort
   setInterval(() => {}, 1000);
 } else {
