@@ -1,6 +1,6 @@
 [
   {
-    "name": "pi-dispatch-complete",
+    "name": "pi-dispatch-watch",
     "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/pi-watch\"",
     "description": "Notification when an async pi dispatch completes"
   }

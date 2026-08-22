@@ -128,3 +128,24 @@ Use `/pi-delegate:probe` to get a one-time bypass for a probe.
 
 Failure symptoms (timeout, no output) all look the same. **Measure the thinking/tool ratio before touching anything.**
 Use `pi_transcript`'s `filter=tools` to see what it's actually reading — a file that was never named is roaming.
+
+## Upgrading pi-delegate
+
+`/plugin update` then `/reload-plugins` is enough. The reload restarts the MCP server and
+re-reads the skills and hooks, and the completion monitor restarts too — but only because
+its `name` in `monitors/monitors.json` changed in 0.6.2.
+
+That is worth knowing, because a monitor's `name` is exactly what Claude Code uses to avoid
+starting a duplicate on reload: **an already-running monitor with an unchanged name is never
+replaced, however much its command changed.** It stops when the session ends, and not
+before. So a release that changes what the monitor *does* has to change its `name` as well,
+or every existing session keeps running the old command in silence.
+
+That silence is the real hazard here rather than the staleness: 0.6.1 moved the completion
+log to a per-session path while every running monitor was still tailing the old shared one.
+Async dispatches completed and wrote their line correctly; nothing was watching where they
+wrote it. `tail -F` on a path nobody writes to reports nothing at all, so the only symptom
+was a notification that never came.
+
+If a completion notification never arrives, `pi_status` and `pi_result` still work — the
+verdict is not lost, only the nudge.
