@@ -1,264 +1,293 @@
-# 任務書：探針 → 配方 → 切片
+# Task Books: Probe → Recipe → Slice
 
-**什麼時候讀這一份**：要寫任務書、要決定切多細、或者產出**完全照任務書做但結果是壞的**。
+**When to read this**: you're writing a task book, deciding how finely to slice, or the output **followed the task
+book exactly and is still wrong**.
 
-核心：小模型的失敗多半是**輸出形狀錯**（漫遊、不動手），不是明知故犯。所以用
-**正面配方**，不要寫一長串禁令。而任務書寫不出來，通常代表修法本身還沒想清楚。
+Core idea: a small model's failures are mostly **wrong output shape** (wandering, never touching the file), not
+knowing better and doing it anyway. So use a **positive recipe**, not a long list of prohibitions. And when a task
+book can't be written, that usually means the fix itself hasn't been thought through yet.
 
-← 回 `SKILL.md`（四路分流與紀律表）
+← back to `SKILL.md` (the four-way split and the discipline table)
 
-## 判準零的實測證據：查表 vs 需要判斷
+## Criterion zero, measured: table lookup vs. needs judgment
 
-⚠ **判準本身寫在 `SKILL.md` 的「四路分流」。這裡只放證據——不要在這裡重寫判準。**
-（同一條判準寫兩次就一定會有一次寫錯，見 `references/verifying.md`。）
+⚠ **The criterion itself lives in `SKILL.md`'s "four-way split." This section is only the evidence — don't rewrite
+the criterion here.**
+(Writing the same criterion twice guarantees one of them gets it wrong — see `references/verifying.md`.)
 
-**判準零（先問這個）：這個轉換需要「讀懂上下文」嗎？**
-不需要（查表就能決定）→ **寫腳本，連派工都不要。**
+**Criterion zero (ask this first): does this transformation require "understanding context"?**
+No (it's decidable by table lookup) → **write a script, don't even dispatch it.**
 
-這條排在最前面，因為它答錯的代價最大。實測（2026-08-20）：把 33 個檔案的
-scoped CSS 依一張對照表搬成 utility——派工 **46 分鐘**、5 份撞逾時、端點的生成吞吐
-被壓到平常的三分之一；而同樣的工作用一支 100 行的確定性腳本重做只花**幾秒**、
-零端點負載，**而且它遇到不確定的情形會停下來回報，不會猜**。
+This comes first because getting it wrong is the most expensive mistake. Measured (2026-08-20): moving 33 files'
+scoped CSS into utilities per a lookup table — dispatched, **46 minutes**, 5 hit timeout, the endpoint's generation
+throughput dropped to a third of normal; the same work redone with a 100-line deterministic script took **seconds**,
+zero endpoint load, **and it stops and reports instead of guessing whenever it hits something uncertain.**
 
-| 需要讀懂上下文 → 派工 | 查表就能決定 → 腳本 |
+| Requires understanding context → dispatch | Decidable by table lookup → script |
 |---|---|
-| 「這個 CSS 選擇器對應 markup 裡哪一個元素」（有多個候選時要判斷） | 「`color: var(--ink)` 換成哪個 utility」 |
-| 「這顆按鈕的 variant 該是哪一個」（`.ghost` 是白底加框 → `outline` 不是 `ghost`） | 「`var(--sp-3)` 是 spacing 刻度的第幾階」 |
-| 「這個屬性要不要搬過去」 | 「這條宣告在表上嗎」 |
+| "Which markup element does this CSS selector correspond to" (judgment needed when there are multiple candidates) | "`color: var(--ink)` maps to which utility" |
+| "Which variant should this button be" (`.ghost` is white background plus border → that's `outline`, not `ghost`) | "Which rung of the spacing scale is `var(--sp-3)`" |
+| "Should this property be moved at all" | "Is this declaration on the table" |
 
-同一輪的對照組：階段二的按鈕遷移（要判斷 variant、保留屬性、找對元素）派給 pi，
-13 份產出零錯誤；階段三的宣告搬移（純查表）派給 pi，大部分沒存活。
-**差別不是難度，是需不需要判斷。**
+Control comparison from the same round: stage two's button migration (needs judgment about variant, which
+attributes to keep, which element to target) was dispatched to pi — 13 outputs, zero errors. Stage three's
+declaration migration (pure table lookup) was also dispatched to pi — most of it didn't survive.
+**The difference isn't difficulty, it's whether judgment is required.**
 
-## 探針：一次解鎖 N 次委派
+## The probe: unlock N dispatches at once
 
-### 探針要驗的是「修法本身成不成立」，不只是環境
+### What the probe validates is "does the fix even hold up," not just the environment
 
-樣板那條講的是環境缺口。還有一種更早爆的：**你想到的修法在這個技術棧裡根本不成立**，
-而小模型會忠實地把它做出來，交回一個壞掉的檔案。
+The "template" section below is about environment gaps. There's an earlier failure mode that's worse:
+**the fix you had in mind doesn't actually hold up in this stack**, and a small model will faithfully build it
+exactly as described, and hand back a broken file.
 
-實例：測試在斷言一個只存在 1.5 秒的 UI 狀態，機器忙的時候斷言還沒開始那個狀態就過去了。
-直覺的修法是用假計時器凍住時間——但 `expect.element` 的輪詢**自己也用 `setTimeout`**，
-凍掉有可能讓斷言永遠不前進。這不是想得出來的，要跑。
+Example: a test was asserting against a UI state that only exists for 1.5 seconds, and when the machine was busy
+the state was already gone before the assertion started. The intuitive fix is fake timers to freeze time — but
+`expect.element`'s polling **itself uses `setTimeout`**, so freezing it could stall the assertion forever. You
+can't reason your way to this — you have to run it.
 
-所以派工之前先自己做一次**最小可行的那一處修改**並跑過：
+So before dispatching, make **the smallest possible version of that one change** yourself and run it:
 
 ```bash
-cp 目標檔 目標檔.probe.ts   # 改名成會被 runner 撈到的形式
-# 只改一處，跑一次
+cp target-file target-file.probe.ts   # rename it into a form the runner will pick up
+# change exactly one spot, run it once
 ```
 
-驗過之後，任務書裡的「要改成什麼樣子」就從**猜測**變成**已驗證的配方**，
-小模型只是把它套到其餘幾處。
+Once it's validated, "what this should look like" in the task book stops being a **guess** and becomes a
+**verified recipe** — the small model is just applying it to the remaining spots.
 
-同一次工作剛好留下對照組：**做過探針的那件一次過**（假計時器已驗證可行，模型照套，
-四條測試全綠）；**沒做探針的那件交回一個編譯不過的檔案**——因為任務書指定的修改位置
-在語法上不成立，而那件事我從頭到尾沒有自己試過一次。
+The same piece of work happened to leave a clean control: **the one with a probe worked on the first try**
+(fake timers validated as workable, the model applied it, all four tests green); **the one without a probe came
+back with a file that didn't even compile** — because the edit location the task book specified was syntactically
+impossible, and I never once tried it myself from start to finish.
 
-**一次探針解鎖 N 次委派——這正是「貴模型解鎖一次」的具體長相。**
+**One probe unlocks N dispatches — this is exactly what "spend the expensive model once to unlock it" looks like.**
 
-### 探針要按「任務類別」做一次，不是整輪做一次
+### The probe needs to be done once per task category, not once per round
 
-「做過探針」不是一個布林值。同一輪派工裡如果有兩種**形狀不同**的任務，
-就要做兩次探針——一次一種。
+"Probed" is not a boolean. If the same round of dispatches contains two **differently shaped** tasks, that's two
+probes needed — one per shape.
 
-實測（2026-08-20，同一輪 12 份派工）：其中 10 份是「把全域 class 換成元件」，
-2 份是「換掉測試的 render 來源」。我為前者做了完整探針（挑最小的檔案自己改一遍、
-跑過），後者覺得「只是換一行 import」就直接派了。
+Measured (2026-08-20, 12 dispatches in one round): 10 were "replace a global class with a component," 2 were
+"swap the render source in a test." I did a full probe for the former (picked the smallest file, changed it
+myself, ran it), and for the latter figured "it's just swapping one import line" and dispatched it directly.
 
-結果：**做過探針的 10 份全部可用；沒做探針的 2 份交回會炸 `document is not defined`
-的檔案**——那個 repo 的慣例是每個要 DOM 的測試檔自己在檔頭寫
-`// @vitest-environment jsdom`，而那一行不在我的任務書裡，因為我沒有自己跑過一次。
+Result: **all 10 probed ones were usable; the 2 un-probed ones came back with files that blew up with
+`document is not defined`** — this repo's convention is that every test file needing the DOM writes
+`// @vitest-environment jsdom` at the top itself, and that line wasn't in my task book, because I never ran it
+myself once.
 
-判準不是「這件事難不難」，是**「這個轉換我親手跑過嗎」**。一行 import 的替換
-一樣會踩到環境慣例。
+The criterion isn't "is this hard," it's **"have I personally run this exact transformation."** Swapping one
+import line hits environment conventions just as easily.
 
-### 探針要跑完整的收工指令，不只跑測試
+### The probe needs to run the full completion command, not just the tests
 
-探針那一檔改完之後，**測試綠不代表配方對**。
+Once the probe file is changed, **tests green does not mean the recipe is correct.**
 
-實測：把 `<button class="btn">` 換成 `<Button>` 之後，`npx vitest run` 全綠，
-但 `npm run check` 吐出 `Unused CSS selector ".cta .btn"`——那條 scoped 規則
-（44px 的最小點擊高度）**整條失效了**，因為 Svelte 的 scoped CSS 選不到子元件內部。
-正確的配方要多一步（改成 `.cta :global([data-slot='button'])`），而**只有型別／
-編譯檢查會講這件事**，測試不會。
+Measured: after replacing `<button class="btn">` with `<Button>`, `npx vitest run` was all green, but
+`npm run check` reported `Unused CSS selector ".cta .btn"` — that scoped rule (the 44px minimum tap-target height)
+**had gone completely dead**, because Svelte's scoped CSS can't select into a child component's internals. The
+correct recipe needed one more step (change it to `.cta :global([data-slot='button'])`), and **only the type/
+compile check ever surfaces this** — the tests don't.
 
-所以探針的收工條件是這個專案的**全部**收工指令（測試、型別檢查、建置），
-不是只有測試。少跑一個，那個檢查會抓到的缺陷就會被複製 N 份。
+So the probe's completion criterion is **all** of this project's completion commands (tests, type-check, build),
+not just tests. Skip one, and whatever defect that check would have caught gets copied N times.
 
-### 樣板要用「有內容的資料」，不然環境問題會晚幾個小時才爆
+### Templates need "data with actual content," or environment gaps blow up hours later
 
-第一版樣板是用**空陣列**渲染的，一路綠燈。等到有人把真實資料餵進去，才發現 jsdom
-還缺 `IntersectionObserver`（縮圖元件的延遲載入要用），整批測試瞬間全紅。
+The first version of the template rendered with an **empty array**, all green the whole way. It wasn't until
+someone fed real data in that jsdom turned out to be missing `IntersectionObserver` (needed for the thumbnail
+component's lazy loading), and the entire batch of tests went red at once.
 
-空資料會跳過清單、卡片、表格這些「最大的一塊」，於是：
+Empty data skips the biggest chunk — lists, cards, tables — so:
 
-- 樣板看起來能用，實際上沒驗證過真正要測的路徑
-- 環境缺口延後爆炸，而且症狀變成「加了資料就壞了」，很容易誤判成資料做錯
-- 小模型拿到那個樣板後會撞上一個**你已經幫他們排除過的坑**，然後逾時收場
+- The template looks usable but never actually exercised the path that matters
+- The environment gap detonates late, and the symptom becomes "it broke when data was added," which is easy to
+  misdiagnose as bad data
+- A small model handed that template runs straight into a hole **you already should have cleared for it**, and
+  ends the round in a timeout
 
-**做樣板的時候就餵有邊界的假資料**：null 的欄位、空清單、很大的數字、被分享的、
-沒有權限的。環境缺口要在你手上爆，不要在四十個外包任務裡爆。
+**Feed the template edge-case fake data from the start**: null fields, empty lists, huge numbers, shared items,
+items with no permission. The environment gap should blow up on your hands, not across forty outsourced tasks.
 
 
-## 任務書的形狀
+## The shape of a task book
 
-小模型的失敗是**輸出形狀錯**（漫遊、不動手），不是明知故犯。所以用**正面配方**，
-不要寫一長串禁令：
+A small model's failure is **wrong output shape** (wandering, never touching the file), not knowing better and
+doing it anyway. So use a **positive recipe**, not a long list of prohibitions:
 
 ```markdown
-# 任務
-建立 <輸出檔>，用來 <目的>。
+# Task
+Create <output-file>, for <purpose>.
 
-## 照順序做這四個動作
-1. read <來源檔>
-2. read <已驗證的樣板檔>
-3. **write <輸出檔>** ← 讀完上面兩個就直接寫
-4. bash: <驗證指令> —— 沒過就修，最多兩輪
+## Do these four things, in order
+1. read <source-file>
+2. read <validated template file>
+3. **write <output-file>** ← write it directly once you've read the two above
+4. bash: <verification command> — fix and retry if it fails, two rounds max
 
-## 禁止
-- 禁止 glob、禁止 grep、禁止讀上面兩個以外的檔案。
-- 禁止修改產品程式碼。
+## Forbidden
+- No glob, no grep, no reading any file other than the two named above.
+- No modifying product code.
 
-最後輸出：DONE <數量>
+Final output: DONE <count>
 ```
 
 
-### 在「沒有例外」的任務書裡提到例外，反而會製造例外
+### Mentioning an exception in a task book with "no exceptions" creates one anyway
 
-一批任務書用同一個模板：每份列「這個檔案裡哪些選擇器是例外」。其中一份的例外是空的，
-我寫成：
+A batch of task books shared one template: each listed "which selectors in this file are exceptions." One of
+them had no exceptions, and I wrote:
 
-> （**沒有例外——圖上一律 4px。** 特別注意 `.panel` 這一個：名字叫 panel 但它在圖上，
-> 走控制項階，**不要**當成容器。）
+> (**No exceptions — every corner on this diagram is 4px. One thing to watch specifically: `.panel`.
+> It's named panel, but on this diagram it's on the control tier — do NOT treat it as a container.**)
 
-那份任務書明白說了沒有例外、明白點名了那個陷阱、明白說了不要。**它照樣把 `.panel`
-做成了容器階。** 而同一批的其他 11 份全對。
+That task book plainly said there were no exceptions, plainly named the trap, plainly said don't. **It made
+`.panel` a container tier anyway.** The other 11 in the same batch were all correct.
 
-原因不是它沒讀到，是我在一份「全部走 A」的指令裡**反覆提到 B**——`容器`、`.panel`、
-`不要當成容器`。對一個在做模式比對的模型來說，那三個詞出現在同一段裡，
-就是把 B 放進了候選集合。
+The cause wasn't that it failed to read the sentence — it's that in an instruction that said "everything goes to
+A," I **kept mentioning B** — `container`, `.panel`, `do not treat as container`. To a model doing pattern
+matching, those three tokens appearing in the same passage puts B into the candidate set regardless of the negation.
 
-**正面配方的完整意思是：不要描述錯誤選項，連「不要選它」都不要。** 那一份應該寫成：
+**The full meaning of a positive recipe is: don't describe the wrong option, not even to say "don't pick it."**
+That one should have read:
 
-> 這個檔案裡的每一處 `border-radius` 都換成 `var(--radius)`。共 5 處。
+> Every `border-radius` in this file becomes `var(--radius)`. 5 occurrences.
 
-一句話，沒有第二個 token 名字出現。**要它做 A，就只講 A。**
+One sentence, no second token name in it. **If you want it to do A, only talk about A.**
 
-判準：任務書寫完之後掃一遍，**錯誤選項的名字出現了幾次？** 大於零就重寫。
-警告的形式（「注意不要 X」）在這裡是反效果——它同時完成了「提醒」與「提示」。
+Criterion: once a task book is written, scan it — **how many times does the wrong option's name appear?**
+More than zero, rewrite it. A warning phrased as "watch out, don't do X" backfires here — it accomplishes
+"reminder" and "hint" at the same time.
 
-（這次是守衛抓到的，代價一個修補回合。但守衛只有在你**寫了**守衛的時候才會抓到，
-而那一批如果沒有那條測試，「圖上有一個 8px 的角」不會有任何人發現。）
+(This particular one got caught by a guard, at the cost of one patch round. But a guard only catches it if you
+**wrote** the guard — and if that batch hadn't had that particular test, "there's one 8px corner on the diagram"
+would never have been noticed by anyone.)
 
-### 任務書錯，它會忠實地做出壞東西
+### A wrong task book gets faithfully built into something broken
 
-skill 前面講的失敗都是「形狀錯」——漫遊、不動手。但**只要指令是可執行的，它就會照做
-到底**，包括做出語法上不可能的東西，而症狀看起來跟「模型不行」一模一樣。
+The failures described earlier in this skill were all "wrong shape" — wandering, never touching the file. But
+**as long as the instruction is executable, it will be carried out to the letter**, including building something
+syntactically impossible, and the symptom looks identical to "the model can't handle it."
 
-實例：任務書寫「在 `href={...}` 那一行的正上方插入一段 Svelte 註解」。那一行在
-`<a>` 的**屬性清單裡**，HTML 註解不能插在標籤中間。小模型照做了，交回一個編譯不過的檔案。
-它沒有做錯任何一件被交代的事。
+Example: a task book said "insert a Svelte comment directly above the `href={...}` line." That line is **inside
+an `<a>` tag's attribute list** — an HTML comment can't be inserted in the middle of a tag. The small model did it
+anyway and handed back a file that didn't compile. It didn't do a single thing wrong relative to what it was told.
 
-**判斷方向：拿到壞產出時，先回頭讀自己的任務書，再懷疑模型。** 兩者的區別是——
+**Which way to look: when you get bad output, reread your own task book before you suspect the model.**
+The two failure modes differ like this:
 
-| | 模型撐不住 | 任務書寫錯 |
+| | Model couldn't handle it | Task book was wrong |
 |---|---|---|
-| 產出 | 空的、或改了沒被點名的檔案 | 完全照你說的做，只是結果是壞的 |
-| 事件檔 | thinking 高、`write` 少或 0 | thinking 0、`write` 正常 |
-| 重跑同一份任務書 | 結果會變 | 每次都壞在同一個地方 |
+| Output | Empty, or edited a file that wasn't named | Exactly what you said, just broken |
+| Event log | High thinking, `write` low or 0 | Thinking 0, `write` normal |
+| Rerun the same task book | Result varies | Breaks the same way every time |
 
-**最常踩的一種：任務書裡貼的「要寫進去的內容」自己含有結束分隔符。**
+**The single most common trip: content pasted into the task book that itself contains the syntax's own closing
+delimiter.**
 
-實測（2026-08-20）：要它把一段 JSDoc 換掉，而我在那段 JSDoc 的**內容**裡舉了一個
-CSS 註解的例子，於是內容裡出現了 `*` 緊接 `/`。那個組合就是 JSDoc 的結束符號——
-註解在那裡提早關閉，後面的說明文字全部變成程式碼，**整支測試檔變成語法錯誤、
-一條測試都跑不起來**。我在任務書裡放了零寬空格想隔開，沒有用（傳遞過程會被正規化掉）。
+Measured (2026-08-20): asked it to replace a block of JSDoc, and the JSDoc **content** itself included a CSS
+comment as an example — so the content contained `*` immediately followed by `/`. That combination is JSDoc's own
+closing marker — the comment closed early right there, everything after it turned into code, and **the entire
+test file became a syntax error, not one test would run.** I tried a zero-width space in the task book to break it
+up; it didn't help (normalized away in transit).
 
-同一個陷阱的其他形狀：heredoc 的內容含有結束標記、Markdown 的程式碼區塊內容含有
-三個反引號、shell 單引號字串內容含有單引號。
+Other shapes of the same trap: heredoc content containing the heredoc's own end marker, Markdown code-block
+content containing three backticks, a shell single-quoted string containing a single quote.
 
-**判準：要它寫進去的內容，是否含有它所在語法的結束符號？** 有就換一種寫法
-（用文字描述那個符號，不要貼真的符號），不要靠轉義或零寬空格。
-這件事**測試會抓到**（語法錯誤很吵），但它會浪費一整個回合，而且症狀
-（「整個檔案壞了」）看起來遠比病因（「我在註解裡貼了註解結束符」）嚴重。
+**Criterion: does the content you're asking it to write contain the closing delimiter of the syntax it's
+embedded in?** If so, use a different representation (describe the symbol in words, don't paste the literal
+symbol) — don't rely on escaping or zero-width spaces. **Tests will catch this** (a syntax error is loud), but it
+burns a whole round, and the symptom ("the whole file is broken") looks far worse than the cause
+("I pasted a comment-closer inside a comment").
 
-修法是修任務書再派一次，不是換模型、不是加措辭。而它也常常反過來幫你：那次失敗逼我想清楚
-「就算插得進去也不該插」——那個目錄的檔案是 CLI 產生的，寫在檔案裡的停用註解會在重新產生時
-消失，規則應該關在設定檔。**任務書寫不出來，通常代表修法本身沒想清楚。**
+The fix is to fix the task book and dispatch again — not switch models, not add more wording. And it often pays
+you back: that failure forced me to think through "even if it could be inserted, it shouldn't be" — the files in
+that directory are CLI-generated, a disable comment written into the file would vanish on regeneration, and the
+rule should live in a config file instead. **When a task book can't be written, that usually means the fix itself
+hasn't been thought through.**
 
-### 對照表漏一個前提條件，錯會被複製 N 份——而且所有自動檢查都不會紅
+### A lookup table missing one precondition gets its error copied N times — and no automated check goes red
 
-上面那一節講的是「任務書要求了做不到的事」，症狀是產出壞掉、看得見。
-還有一種更貴：**任務書的替換配方本身合法，但漏了一個前提條件。**
+The section above is about "the task book asked for something impossible" — visibly broken output. There's a
+more expensive variant: **the replacement recipe in the task book is itself legal, but it's missing a precondition.**
 
-實例（2026-08-20）。配方裡有這一列：
+Example (2026-08-20). The recipe had this row:
 
 ```
 button.btn { min-height: 44px; }   →   :global([data-slot='button']) { min-height: 44px; }
 ```
 
-替換後的寫法完全合法、編譯得過、測試全綠、`npm run check` 0 錯 0 警告、build exit 0。
-但它**漏了一個條件**：`:global()` 自己沒有作用範圍。原本的 `.btn` 是 Svelte scoped 的
-（只影響這個元件），換完之後那條 44px 套到了**全站每一顆**同名元素上。
+The replacement is perfectly legal, compiles, tests all green, `npm run check` 0 errors 0 warnings, build exit 0.
+But it's **missing one condition**: `:global()` has no scope of its own. The original `.btn` was Svelte-scoped
+(affects only this component); after the replacement, that 44px rule applied to **every** same-named element
+**site-wide**.
 
-三個檔案，同一個錯，一次派工全中——因為它們都忠實地照著那一列做了。
-症狀會出現在**別的頁面**上（某顆按鈕多了一段說不出來源的間距），而改壞它的那個檔案
-跟那顆按鈕毫無關係。
+Three files, same mistake, one dispatch, all three hit — because all three faithfully followed that one row.
+The symptom shows up on **an unrelated page** (some button gains unexplained extra spacing), and the file that
+broke it has nothing to do with that button.
 
-**怎麼在寫配方的時候就抓到：對每一列問一次「這個轉換有沒有前提條件」。**
-左邊那個寫法為什麼是對的？如果理由裡有「因為它被某個東西限制住」（scope、層級、
-命名空間、生命週期），那右邊必須把同一個限制帶過去。上例左邊之所以安全是因為
-Svelte 的 scoping，而右邊把 scoping 拿掉了——配方漏的就是這個。
+**How to catch it while writing the recipe: ask, for every row, "does this transformation have a precondition?"**
+Why is the left-hand side correct? If the reason involves "because it's constrained by something" (scope, layer,
+namespace, lifetime), the right-hand side must carry that same constraint forward. In the example above, the
+left side is safe because of Svelte's scoping, and the right side removes the scoping — that's exactly what the
+recipe was missing.
 
-配方沒把握的時候，**把那一列拆成「一定成立」與「要看情況」兩張表**，後者不要派工，
-自己做。三個檔案自己改比修三個檔案便宜。
+When you're not confident about the recipe, **split that row into two tables: "always holds" and "depends" —**
+keep the latter off dispatch and do it yourself. Fixing three files by hand is cheaper than fixing three broken ones.
 
-### 明文禁止是有效的——但只對「動作」有效，對「形狀」無效
+### Explicit prohibitions work — but only against "actions," not against "shape"
 
-好消息，而且與本文前面「禁令對行為形狀沒有約束力」那條不衝突，值得分清楚：
+Good news, and worth distinguishing from the earlier claim that "prohibitions have no grip on behavioural shape":
 
-實測 12 份派工，任務書寫了「**禁止改動任何註解的文字**」與「**禁止刪掉任何 `<style>`
-規則，只換選擇器**」。結果：**0 行註解被改寫、0 條規則被刪**。
+Measured, 12 dispatches, task book said "**do not modify the text of any comment**" and "**do not delete any
+`<style>` rule, only change selectors**." Result: **0 lines of comment rewritten, 0 rules deleted.**
 
-這與前面「用 `--tools` 收掉能力、不要用講的」不矛盾。差別在禁的是什麼：
+This doesn't contradict the earlier "take the capability away with `--tools`, don't just tell it" point. The
+difference is what's being prohibited:
 
-| 禁的東西 | 有效嗎 | 為什麼 |
+| What's prohibited | Effective? | Why |
 |---|---|---|
-| 「不要漫遊、不要 glob」（**行為形狀**） | ✗ 無效 | 它不是明知故犯，是不知道還能怎麼開始。要拿掉工具 |
-| 「不要改註解、不要刪規則」（**具體動作**） | ✓ 有效 | 這是它在編輯時的一個明確選擇，講清楚就會照做 |
+| "Don't wander, don't glob" (**behavioural shape**) | ✗ No | It's not defiance — it doesn't know how else to start. Take the tool away instead |
+| "Don't edit comments, don't delete rules" (**a specific action**) | ✓ Yes | This is a discrete choice it makes while editing; stating it clearly gets it followed |
 
-所以任務書裡的禁令要寫成**具體動作**，不要寫成行為傾向。
-「禁止改動註解的文字」有效；「不要自己發揮」沒有。
+So prohibitions in a task book should be written as **specific actions**, not behavioural tendencies.
+"Do not modify comment text" works; "don't go off script" doesn't.
 
-### 任務書裡的示範文字會被逐字複製到每一處
+### Example text in a task book gets copied verbatim into every spot
 
-任務書給了一段兩行的中文註解當範例，要它加在三個修改點。它把**完全相同的兩行**貼了三次，
-包括語意上不成立的那一處（`afterEach` 裡）。
+A task book gave a two-line Chinese comment as an example, to be added at three edit points. It pasted **the
+exact same two lines** three times, including at the one spot where it made no semantic sense (inside an
+`afterEach`).
 
-它不會自己改寫成適合各處的說法。要嘛在任務書寫明「每一處寫不同的一句，不要重複貼同一段」，
-要嘛就當成審查時一定要收尾的一項。這不是缺陷，是**它把範例當樣板**——而樣板本來就是照抄的。
+It will not rewrite the example to fit each spot on its own. Either state explicitly in the task book "write a
+different sentence at each spot, don't paste the same block again," or treat it as a mandatory review item. This
+isn't a defect — it **treats the example as a template**, and a template is exactly the thing you copy.
 
-三個要點：
+Three more points:
 
-- **點名要讀哪兩個檔案。** 不點名，它會讀四十個。
-- **時間預算照工具成本抓。** 先量一次驗證指令的實際秒數（含啟動），乘上「它會跑幾次」。
-  一次 vitest 冷啟動 80 秒的專案，`--max-time` 給 15 分鐘會不夠。
+- **Name which two files it should read.** Leave it unnamed and it will read forty.
+- **Size the time budget off the actual tool cost.** Measure the verification command's real wall time once
+  (including startup), and multiply by "how many times it will run." On a project where one cold vitest start is
+  80 seconds, a `--max-time` of 15 minutes won't be enough.
 
-## 切片：比你以為的還要更小
+## Slicing: smaller than you think
 
-「一個行程一個檔案」是**下限，不是答案**。實測的分水嶺：
+"One process per file" is a **floor, not the answer.** Measured breakpoints:
 
-| 來源檔大小 | 結果 |
+| Source file size | Result |
 |---|---|
-| 27–75 行 | 順利，3–7 分鐘一支，覆蓋率 80–100% |
-| ~250 行 | 可以，但要 5 分鐘以上 |
-| **1044 行** | **連測試檔都沒建立就逾時，連兩次** |
+| 27–75 lines | Smooth, 3–7 minutes each, 80–100% coverage |
+| ~250 lines | Works, but takes 5+ minutes |
+| **1044 lines** | **Timed out without even creating the test file, twice in a row** |
 
-大檔案不是「慢一點」，是**完全做不出來**——它把預算全花在讀檔上，還沒開始寫就沒時間了。
+A large file isn't "a bit slower" — it's **completely undoable**: the whole budget gets spent on reading, and
+there's no time left to start writing.
 
-所以超過兩三百行的目標，要再往下切成**功能區塊**：一個 agent 只負責「排序與欄寬」或
-「匯入流程」，各自產出一支測試檔，同一個來源檔由好幾個 agent 分工。切的時候要一併給
-**已驗證可跑的樣板**（見上面「探針」那幾節），否則每個切片都會各自卡在同一個環境問題上。
+So for a target over two or three hundred lines, slice further into **functional chunks**: one agent handles only
+"sorting and column width," another only "the import flow," each producing its own test file, with several
+agents dividing up the same source file. Slicing needs to come with an **already-validated, runnable template**
+(see the "probe" sections above) for each slice, or every slice will separately get stuck on the same environment problem.
 
-判斷標準不是「這個任務難不難」，而是**「它要讀進多少字才能開始動手」**。
+The test isn't "is this task hard" — it's **"how many characters does it have to read before it can start working."**
