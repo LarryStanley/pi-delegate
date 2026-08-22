@@ -54,7 +54,7 @@ function lastUsage(events) {
 // 留著是為了前向相容——pi 文件把它描述成更強的訊號（「整個 session 定案，無
 // 自動續跑」），未來版本有可能補上，接受兩者不花額外成本。
 // 之後如果想「簡化」成只看一個事件，先重新驗證真實 pi 到底發什麼，不要單靠文件。
-const TERMINAL_SUCCESS_EVENTS = new Set(["agent_end", "agent_settled"]);
+export const TERMINAL_SUCCESS_EVENTS = new Set(["agent_end", "agent_settled"]);
 
 function resolveStatus({ aborted, timedOut, events }) {
   if (aborted) return "aborted";

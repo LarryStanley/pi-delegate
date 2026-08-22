@@ -122,6 +122,23 @@ test("agent_end 之後子行程仍存活（真實 pi RPC 行為）也要在遠�
   );
 });
 
+test("abort 在終局事件之前搶到 settled，即使子行程之後仍會吐 agent_end 也回傳 aborted 而非 completed", async () => {
+  // 對應 review 指出的 race：abort() 跟 settleFromTerminalEvent 都會呼叫
+  // killWithEscalation()，兩邊都沒有互斥的話會有重複 SIGTERM / 孤兒
+  // graceTimer 的風險。這裡用 --stay-alive（跟前一個測試一樣，agent_end
+  // 之後子行程不會自己死）來確保就算事件流已經吐出終局事件，只要 abort()
+  // 先設定 settled，判決仍必須是 "aborted"，不能被之後才處理到的 agent_end
+  // 蓋掉變成 "completed"。
+  const { dir, file } = tmpTask();
+  const { handle, done } = await dispatch({
+    taskFile: file, cwd: dir, model: "M", timeoutS: 15,
+    sessionId: "s8", piCommand: [...FAKE_PI, "--stay-alive"], gitDiffStat: "",
+  });
+  await handle.abort();
+  const verdict = await done;
+  assert.equal(verdict.status, "aborted");
+});
+
 test("子行程忽略 SIGTERM 時，逾時仍靠 SIGKILL escalation 結束並回傳 timeout", async () => {
   const { dir, file } = tmpTask();
   const { done } = await dispatch({

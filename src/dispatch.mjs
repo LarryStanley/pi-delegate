@@ -2,15 +2,16 @@ import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, resolve as resolvePath } from "node:path";
 import { createJsonlSplitter } from "./jsonl.mjs";
-import { computeVerdict } from "./verdict.mjs";
+import { computeVerdict, TERMINAL_SUCCESS_EVENTS } from "./verdict.mjs";
 
 export const DEFAULT_MODEL = "Qwen3.8-27B-oQ4e-mtp";
 export const DEFAULT_TIMEOUT_S = 1500;
 const KILL_GRACE_MS = 2000;
 
-// 必須跟 verdict.mjs 的 TERMINAL_SUCCESS_EVENTS 同步（那邊已凍結，不能 import
-// 一個沒 export 的 const，所以在此複製一份）。見下方「為什麼判決要用事件驅動」。
-const TERMINAL_EVENT_TYPES = new Set(["agent_end", "agent_settled"]);
+// 判定「終局事件」用同一份 verdict.mjs 的 TERMINAL_SUCCESS_EVENTS ——
+// dispatch 要不要收尾子行程、verdict 要不要判 completed，看的必須是同一組
+// 事件名稱，否則兩邊一邊認一邊不認，就會重新出現本輪要修的那個 bug
+// class（settle 訊號跟判決訊號對不上）。
 
 // 旗標理由見 spec §6。不給 bash（給了會漫遊不動手）；--no-context-files 是
 // 必要不是最佳化（實測：沒加 = 43 read / 0 write / 逾時；加了 = 93 秒完成）。
@@ -136,7 +137,7 @@ export async function dispatch({
         continue;
       }
       events.push(event);
-      if (TERMINAL_EVENT_TYPES.has(event?.type)) settleFromTerminalEvent();
+      if (TERMINAL_SUCCESS_EVENTS.has(event?.type)) settleFromTerminalEvent();
     }
   });
 
@@ -202,6 +203,14 @@ export async function dispatch({
     async abort() {
       aborted = true;
       send({ type: "abort" });
+      // 跟 settleFromTerminalEvent 共用同一個 `settled` 旗標：一個終局事件
+      // 有可能在 abort() 設完 aborted 之後、才被 stdout handler 讀到，兩條
+      // 路徑若都各自呼叫 killWithEscalation()，就是兩次 SIGTERM 疊加、
+      // 第一個 graceTimer 被第二個蓋掉變成孤兒計時器。只讓先到的那條路徑
+      // 動手收尾；resolveStatus 已經把 aborted 排在 terminal-event 分支
+      // 之前判斷，所以判決本身不受影響。
+      if (settled) return;
+      settled = true;
       killWithEscalation();
     },
     state() {
