@@ -7,6 +7,10 @@ enforce dispatch discipline.
 Claude acts as tech lead: it produces the probe, the task book, the acceptance script, and the
 verdict. **pi writes the source code.**
 
+![Architecture: Claude calls MCP tools, the MCP server holds each pi child's stdio open, pi children call the user's own provider](docs/diagrams/architecture.svg)
+
+*Claude never speaks the RPC protocol directly — the MCP server holds the pipe, which is what makes mid-run `pi_steer` and `pi_abort` possible.*
+
 ## Install
 
 ```bash
@@ -95,6 +99,12 @@ To make one hand-edit (a probe), run `/pi-delegate:probe` first for a one-time b
 | `pi_result` | Collect the verdict of an async dispatch |
 | `pi_transcript` | Drill in only when the verdict isn't enough |
 | `pi_stats` | Check token usage |
+
+## How a dispatch works
+
+![Sequence diagram of one pi_dispatch call followed by a mid-run pi_steer, showing Claude, the MCP server, a pi child, and the provider](docs/diagrams/dispatch-sequence.svg)
+
+*The MCP server's activation spans the whole session; that's why it can still deliver a `steer` to the pi child's stdin mid-run, and why it — not the child process — decides when the run is over.*
 
 ## Known gaps
 
