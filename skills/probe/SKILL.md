@@ -1,15 +1,17 @@
 ---
-description: 取得一次性放行，讓下一個 Write/Edit 不被 strict 模式擋下（用於探針）
+description: Get a one-time bypass so the next Write/Edit is not blocked by strict mode (for probing)
 disable-model-invocation: true
 ---
 
-使用者要做探針 —— 親手做**一處**最小可行的修改並跑過，之後要把配方寫進任務書。
+The user wants to run a probe — make **one** minimal viable change by hand and verify it works,
+then write the recipe into a task book afterward.
 
-建立一次性放行旗標：
+Create the one-time bypass flag:
 
 ```bash
-node -e "import('${CLAUDE_PLUGIN_ROOT}/src/guard.mjs').then(async g => { const {mkdirSync,writeFileSync}=await import('node:fs'); const {dirname}=await import('node:path'); const p=g.probeFlagPath(); mkdirSync(dirname(p),{recursive:true}); writeFileSync(p,'1'); console.log('探針放行已開啟：下一個 Write/Edit 會通過'); })"
+node -e "import('${CLAUDE_PLUGIN_ROOT}/src/guard.mjs').then(async g => { const {mkdirSync,writeFileSync}=await import('node:fs'); const {dirname}=await import('node:path'); const p=g.probeFlagPath(); mkdirSync(dirname(p),{recursive:true}); writeFileSync(p,'1'); console.log('Probe bypass enabled: the next Write/Edit will go through'); })"
 ```
 
-然後告訴使用者：**這個旗標只能用一次**，下一個 Write/Edit 通過後自動關閉。
-做完探針後立刻把已驗證的配方寫成任務書，其餘的照樣派給 pi。
+Then tell the user: **this flag is good for one use only** — it turns itself off automatically after
+the next Write/Edit goes through. Once the probe is done, immediately write the verified recipe into
+a task book, and dispatch everything else to pi as usual.
