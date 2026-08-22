@@ -121,10 +121,27 @@ export function createToolHandlers({
       });
       registry.add(sessionId, { handle, done, verdict: null, cwd, taskFile: task_file, model });
 
-      done.then((verdict) => {
-        registry.update(sessionId, { verdict });
-        if (mode === "async") appendEventsLog(verdict);
-      });
+      done
+        .then((verdict) => {
+          registry.update(sessionId, { verdict });
+          if (mode === "async") appendEventsLog(verdict);
+        })
+        .catch((error) => {
+          const verdict = {
+            status: "failed",
+            write_count: 0,
+            files_written: [],
+            files_read_unrequested: [],
+            git_diff_stat: "",
+            duration_s: 0,
+            tokens: { input: 0, output: 0 },
+            session_id: sessionId,
+            last_message: `dispatch 失敗：${error?.message ?? error}`,
+            last_message_truncated: false,
+          };
+          registry.update(sessionId, { verdict });
+          if (mode === "async") appendEventsLog(verdict);
+        });
 
       if (mode === "async") {
         return text(`已派工（非同步）。session_id: ${sessionId}\n完成時會通知；也可用 pi_status 查進度。`);
