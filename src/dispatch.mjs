@@ -8,10 +8,11 @@ import { loadConfig, loadPiDefaults, resolveModelSelection, THINKING_LEVELS } fr
 export { DEFAULT_TIMEOUT_S } from "./config.mjs";
 const KILL_GRACE_MS = 2000;
 
-// 判定「終局事件」用同一份 verdict.mjs 的 isTerminalEvent() ——
-// dispatch 要不要收尾子行程、verdict 要不要判 completed，看的必須是同一組
-// 事件名稱，否則兩邊一邊認一邊不認，就會重新出現本輪要修的那個 bug
-// class（settle 訊號跟判決訊號對不上）。
+// "Terminal event" is decided with the very same isTerminalEvent() from verdict.mjs —
+// whether dispatch closes out the child process and whether the verdict decides
+// completed must look at the same set of event names, or the two sides disagree and the
+// bug class this round is fixing (settle signal and verdict signal not lining up) comes
+// right back.
 
 // The flags fall into two classes; do not conflate them.
 //
@@ -105,11 +106,12 @@ export async function dispatch({
 }) {
   const effectiveTimeoutS = timeoutS ?? config.timeout_s;
   const [command, ...prefixArgs] = piCommand;
-  // piCommand 的路徑（例如測試用的 "node test/fixtures/fake-pi.mjs"）是相對於
-  // 呼叫者的 process.cwd() 寫的，但子行程會被 spawn 到 task 的 cwd。若不先轉成
-  // 絕對路徑，子行程啟動時會在 task 目錄下找不到那個相對路徑而 MODULE_NOT_FOUND
-  // 直接以 exit_code 1 收工（判決會誤判成 "failed"）。真正的 piCommand（["pi"]，
-  // 走 PATH 查找）沒有這個問題，這裡只在候選路徑實際存在時才改寫。
+  // A piCommand path (e.g. "node test/fixtures/fake-pi.mjs" in tests) is written
+  // relative to the caller's process.cwd(), but the child is spawned into the task's cwd.
+  // Without resolving to an absolute path first, the child looks for that relative path
+  // inside the task directory at startup, hits MODULE_NOT_FOUND, and exits 1 (the verdict
+  // then misreads it as "failed"). The real piCommand (["pi"], resolved via PATH) has no
+  // such problem, so this only rewrites the path when the candidate actually exists.
   const resolvedPrefixArgs = prefixArgs.map((arg) => {
     if (isAbsolute(arg) || arg.startsWith("-")) return arg;
     const candidate = resolvePath(process.cwd(), arg);
@@ -154,23 +156,27 @@ export async function dispatch({
     }, KILL_GRACE_MS);
   }
 
-  // pi --mode rpc 是「持久化雙向控制通道」：跑完一個 prompt、發完 agent_end
-  // 之後，它不會自己 exit — 還在等後續的 steer / abort 指令，這正是 steer
-  // 跟 abort 能運作的前提。這代表「process 自然關閉」永遠不能當作完成訊號：
-  // 靠 child.on("close") 判決會一路空等到 timeout 的 killWithEscalation()
-  // 把它殺掉才觸發 close，屆時 timedOut 已經是 true，resolveStatus 裡
-  // timedOut 又贏過其他狀態 —— 結果是每一次派工都回報 "timeout"，即使
-  // pi 早就完成任務、寫完檔案。真正可靠的完成訊號是事件流裡的終局事件
-  // （agent_end / agent_settled，跟 verdict.mjs 的 TERMINAL_SUCCESS_EVENTS
-  // 一致）。所以判決要在「事件流裡看到終局事件」的當下就定案，然後才去收
-  // 尾子行程 —— 不要「簡化」回等 close，那就是在重新引入這個 bug。
+  // `pi --mode rpc` is a "persistent bidirectional control channel": after finishing one
+  // prompt and emitting agent_end, it does not exit on its own — it's still waiting for a
+  // follow-up steer / abort command, which is exactly what makes steer and abort possible.
+  // That means "the process closed on its own" can never be the completion signal:
+  // deciding the verdict on child.on("close") would leave it hanging all the way until
+  // timeout's killWithEscalation() finally kills it and triggers close, by which point
+  // timedOut is already true, and resolveStatus ranks timedOut above every other status —
+  // so every single dispatch would report "timeout" even when pi finished the task and
+  // wrote its files long ago. The truly reliable completion signal is a terminal event in
+  // the event stream (agent_end / agent_settled, matching verdict.mjs's
+  // TERMINAL_SUCCESS_EVENTS). So the verdict must settle the instant a terminal event is
+  // seen in the stream, and only then close out the child process — do not "simplify"
+  // this back to waiting on close, that is re-introducing this exact bug.
   let settled = false;
 
-  // git_diff_stat 必須在**判決定案的當下**才求值，不是在 spawn 之前。
-  // 之前 server.mjs 是在派工前就算好一個字串傳進來，於是在乾淨的工作樹上
-  // 無論 pi 寫了什麼，判決永遠是 `(none)` —— 剛好廢掉 spec §7/§11 引進這個
-  // 欄位的唯一理由（「逾時 ≠ 什麼都沒做」）。這裡同時接受字串（測試、
-  // 或呼叫端真的想釘死一個值）與 thunk（正式路徑）。
+  // git_diff_stat must be evaluated **at the moment the verdict settles**, not before
+  // spawn. server.mjs used to compute a string before dispatching and pass that in, so on
+  // a clean working tree the verdict always read `(none)` regardless of what pi actually
+  // wrote — which defeats the one reason spec §7/§11 introduced this field in the first
+  // place ("timed out" does not mean "did nothing"). This accepts either a string (tests,
+  // or a caller that genuinely wants to pin a value) or a thunk (the real path).
   function resolveGitDiffStat() {
     try {
       return typeof gitDiffStat === "function" ? gitDiffStat() : gitDiffStat;
@@ -199,9 +205,9 @@ export async function dispatch({
     settled = true;
     clearTimeout(timer);
     settledResolve(makeVerdict());
-    // 判決已經定案，子行程沒有繼續活著的理由了 —— 用既有的
-    // killWithEscalation（不能繞過去：child.killed 不可靠，見上面關於
-    // "exit" 事件的說明），SIGTERM 先禮貌一次，逾期再 SIGKILL。
+    // The verdict has settled, so the child process has no reason left to live — use the
+    // existing killWithEscalation (do not bypass it: child.killed is unreliable, see the
+    // note above about the "exit" event), a polite SIGTERM first, SIGKILL if it overstays.
     killWithEscalation();
   }
 
@@ -213,7 +219,7 @@ export async function dispatch({
       try {
         event = JSON.parse(line);
       } catch {
-        // 非 JSON 行忽略（pi 偶爾會印非事件輸出）
+        // Ignore non-JSON lines (pi occasionally prints non-event output)
         continue;
       }
       events.push(event);
@@ -221,19 +227,22 @@ export async function dispatch({
         settleNow();
         continue;
       }
-      // pi 的 rpc mode 對失敗的指令會吐
+      // pi's rpc mode emits, for a failed command,
       //   { id?, type:"response", command, success:false, error:string }
-      // （dist/modes/rpc/rpc-types.d.ts 的 RpcResponse union 最後一支；
-      //  rpc-mode.js:37 的 error() helper）然後**繼續活著等下一個指令** ——
-      // rpc mode 是刻意常駐的，所以沒人收尾就會一路空等到 timeout。
+      // (the last member of the RpcResponse union in dist/modes/rpc/rpc-types.d.ts; the
+      // error() helper at rpc-mode.js:37) and then **keeps running, waiting for the next
+      // command** — rpc mode is deliberately persistent, so with nobody closing it out
+      // this would hang all the way to timeout.
       //
-      // 注意：**API 呼叫失敗（推論伺服器沒開、model id 打錯）不走這條**。實測過：
-      // prompt 的 preflight 會先回 success:true，錯誤是掛在 assistant 訊息的
-      // `stopReason:"error"` / `errorMessage` 上，然後照常發 agent_end
-      // （見 verdict.mjs 的 terminalErrorMessage()）。這條涵蓋的是 preflight
-      // 就沒過、指令解析失敗那一類。兩條都要有，缺一邊就會漏一整類失敗。
+      // Note: **an API call failure (inference server not running, wrong model id) does
+      // NOT go through this path**. Verified by actually running it: a prompt's preflight
+      // returns success:true first, and the error instead lands on the assistant
+      // message's `stopReason:"error"` / `errorMessage` (see terminalErrorMessage() in
+      // verdict.mjs), followed by a normal agent_end. This path covers the other class —
+      // preflight itself failing, or command parsing failing. Both paths are needed; drop
+      // either one and a whole class of failure gets missed.
       if (event?.type === "response" && event.success === false) {
-        failure = String(event.error ?? `${event.command} 失敗`);
+        failure = String(event.error ?? `${event.command} failed`);
         settleNow();
       }
     }
@@ -246,10 +255,11 @@ export async function dispatch({
 
   const timer = setTimeout(() => {
     timedOut = true;
-    // 逾時也要翻 `settled`：否則一個在逾時之後才抵達的終局事件仍會跑完整條
-    // settle 路徑 —— 第二次 SIGTERM、graceTimer 被覆蓋、第一個計時器變孤兒。
-    // 判決本身仍由 close handler 產生（此時 timedOut 已是 true，resolveStatus
-    // 會判 timeout），這裡只是把互斥閘門補齊。
+    // The timeout also has to flip `settled`: otherwise a terminal event that arrives
+    // just after the timeout would still run the whole settle path — a second SIGTERM,
+    // graceTimer overwritten, the first timer orphaned. The verdict itself is still
+    // produced by the close handler (timedOut is already true there, so resolveStatus
+    // reports timeout); this just closes the mutual-exclusion gate.
     settled = true;
     killWithEscalation();
   }, effectiveTimeoutS * 1000);
@@ -258,19 +268,22 @@ export async function dispatch({
     if (child.stdin.writable) child.stdin.write(`${JSON.stringify(command_)}\n`);
   }
 
-  // 子行程可能在我們判斷 `writable` 之後、實際 write() 之前就死掉（race）；
-  // 沒有這個監聽器，未處理的 EPIPE 'error' 會直接讓 host process crash。
+  // The child process can die (a race) after we check `writable` but before the actual
+  // write() happens. Without this listener, an unhandled EPIPE 'error' would crash the
+  // host process outright.
   child.stdin.on("error", () => {
-    // 忽略：子行程已死或 stdin 已關閉，讓 close/exit 事件走判決流程即可。
+    // Ignore: the child is already dead or stdin already closed; let the close/exit
+    // events drive the verdict path.
   });
 
-  send({ type: "prompt", message: `讀取 ${taskFile} 並照著做。` });
+  send({ type: "prompt", message: `Read ${taskFile} and follow it.` });
 
   child.on("close", (exitCode) => {
     clearTimeout(timer);
     if (graceTimer) clearTimeout(graceTimer);
-    // 這裡刻意不看 `settled`：終局事件那條路已經 resolve 過的話，Promise 的
-    // resolve 本來就是冪等的；但逾時那條路是**只**翻 settled、判決留給這裡產生。
+    // Deliberately not checking `settled` here: if the terminal-event path already
+    // resolved, Promise resolution is idempotent anyway; but the timeout path **only**
+    // flips settled and leaves producing the verdict to this handler.
     settledResolve(makeVerdict(exitCode));
   });
 
@@ -278,9 +291,10 @@ export async function dispatch({
     clearTimeout(timer);
     if (graceTimer) clearTimeout(graceTimer);
     settled = true;
-    // spec §11：「pi 子行程 spawn 失敗 → status: failed，附 stderr」。
-    // 這串（例如 `Error: spawn pi ENOENT`）以前只進得了 handle.state()，
-    // 判決本身完全不提，於是 pi 不在 PATH 上時只會拿到一個沒有線索的 failed。
+    // spec §11: "pi child process failed to spawn → status: failed, with stderr
+    // attached." This string (e.g. `Error: spawn pi ENOENT`) used to only reach
+    // handle.state(); the verdict itself never mentioned it, so when pi wasn't on PATH
+    // you'd just get a clueless failed with no lead to follow.
     stderr += `${error}\n`;
     settledResolve(makeVerdict());
   });
@@ -293,12 +307,12 @@ export async function dispatch({
     async abort() {
       aborted = true;
       send({ type: "abort" });
-      // 跟 settleNow() 共用同一個 `settled` 旗標：一個終局事件
-      // 有可能在 abort() 設完 aborted 之後、才被 stdout handler 讀到，兩條
-      // 路徑若都各自呼叫 killWithEscalation()，就是兩次 SIGTERM 疊加、
-      // 第一個 graceTimer 被第二個蓋掉變成孤兒計時器。只讓先到的那條路徑
-      // 動手收尾；resolveStatus 已經把 aborted 排在 terminal-event 分支
-      // 之前判斷，所以判決本身不受影響。
+      // Shares the same `settled` flag with settleNow(): a terminal event can still be
+      // read by the stdout handler just after abort() sets aborted, and if both paths
+      // each called killWithEscalation() independently, that's two stacked SIGTERMs, with
+      // the second graceTimer overwriting the first into an orphaned timer. Only whichever
+      // path arrives first gets to close things out; resolveStatus already checks aborted
+      // ahead of the terminal-event branch, so the verdict itself is unaffected.
       if (settled) return;
       settled = true;
       killWithEscalation();

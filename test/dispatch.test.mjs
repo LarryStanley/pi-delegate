@@ -7,8 +7,9 @@ import { buildPiArgs, dispatch } from "../src/dispatch.mjs";
 import { formatVerdict } from "../src/verdict.mjs";
 import { DEFAULTS } from "../src/config.mjs";
 
-// 測試一律自己帶 config 與 piDefaults，絕不讓結果取決於這台機器上剛好存在的
-// ~/.claude/pi-delegate/config.json 或 ~/.pi/agent/settings.json。
+// Every test supplies its own config and piDefaults; results must never depend on whatever
+// ~/.claude/pi-delegate/config.json or ~/.pi/agent/settings.json happens to exist on this
+// machine.
 const CONFIG = { ...DEFAULTS, drafter_patterns: [...DEFAULTS.drafter_patterns] };
 const NO_PI_DEFAULTS = { provider: null, model: null };
 
@@ -30,9 +31,9 @@ function tmpTask(body = "改 a.ts") {
   return { dir, file };
 }
 
-// --- 結構性旗標：固定不變 ---
+// --- Structural flags: fixed ---
 
-test("buildPiArgs 帶上結構性旗標", () => {
+test("buildPiArgs emits the structural flags", () => {
   const args = buildPiArgs({ sessionId: "s1", config: CONFIG, piDefaults: NO_PI_DEFAULTS });
   assert.ok(args.includes("--mode") && args.includes("rpc"));
   assert.ok(args.includes("--session-id") && args.includes("s1"));
@@ -40,45 +41,46 @@ test("buildPiArgs 帶上結構性旗標", () => {
   assert.ok(args.includes("--no-extensions"));
 });
 
-test("buildPiArgs 不得帶 --cwd（pi 沒有這個旗標）", () => {
+test("buildPiArgs must not emit --cwd (pi has no such flag)", () => {
   assert.ok(!buildPiArgs({ sessionId: "s", config: CONFIG, piDefaults: NO_PI_DEFAULTS }).includes("--cwd"));
 });
 
-test("buildPiArgs 不得帶 --no-session（會讓 drill-down 無資料）", () => {
+test("buildPiArgs must not emit --no-session (it would leave drill-down with no data)", () => {
   assert.ok(!buildPiArgs({ sessionId: "s", config: CONFIG, piDefaults: NO_PI_DEFAULTS }).includes("--no-session"));
 });
 
-// --- provider / model：沒設定就整個不帶，交給 pi 自己解析 ---
+// --- provider / model: with nothing configured, emit nothing and let pi resolve ---
 //
-// 這是整輪 provider-agnostic 改動的回歸守門。pi 的 findInitialModel
-// （dist/core/model-resolver.js:423-476）在沒有 CLI 旗標時會用
-// ~/.pi/agent/settings.json 的 defaultProvider / defaultModel —— 也就是使用者
-// 本來就在用的那個模型。外掛自己發明一個預設模型，就是把別人的設定蓋掉。
-test("沒有 config、沒有參數時，不帶 --provider 也不帶 --model", () => {
+// This is the regression guard for the whole provider-agnostic change. With no CLI flags,
+// pi's findInitialModel (dist/core/model-resolver.js:423-476) uses defaultProvider /
+// defaultModel from ~/.pi/agent/settings.json — the model the user already works with.
+// A plugin inventing its own default model is a plugin overriding somebody's setup.
+test("with no config and no arguments, neither --provider nor --model is emitted", () => {
   const args = buildPiArgs({ sessionId: "s", config: DEFAULTS, piDefaults: NO_PI_DEFAULTS });
-  assert.ok(!args.includes("--provider"), `不該有 --provider：${args.join(" ")}`);
-  assert.ok(!args.includes("--model"), `不該有 --model：${args.join(" ")}`);
+  assert.ok(!args.includes("--provider"), `should carry no --provider: ${args.join(" ")}`);
+  assert.ok(!args.includes("--model"), `should carry no --model: ${args.join(" ")}`);
   assert.ok(!args.join(" ").includes("omlx"));
   assert.ok(!args.join(" ").includes("Qwen"));
 });
 
-test("config 指定 provider / model 時兩個旗標都出現", () => {
+test("when the config specifies provider / model, both flags appear", () => {
   const config = { ...DEFAULTS, provider: "anthropic", model: "claude-sonnet-4-6" };
   const args = buildPiArgs({ sessionId: "s", config, piDefaults: NO_PI_DEFAULTS });
   assert.equal(args[args.indexOf("--provider") + 1], "anthropic");
   assert.equal(args[args.indexOf("--model") + 1], "claude-sonnet-4-6");
 });
 
-test("呼叫參數覆寫 config 的 provider / model", () => {
+test("call arguments override the config's provider / model", () => {
   const config = { ...DEFAULTS, provider: "anthropic", model: "claude-sonnet-4-6" };
   const args = buildPiArgs({ sessionId: "s", config, piDefaults: NO_PI_DEFAULTS, provider: "ollama", model: "qwen3:8b" });
   assert.equal(args[args.indexOf("--provider") + 1], "ollama");
   assert.equal(args[args.indexOf("--model") + 1], "qwen3:8b");
 });
 
-// pi 只在 provider 與 model **同時**存在時才採用命令列的選擇
-// （model-resolver.js:428），單獨一個會被靜默忽略 —— 所以要嘛成對出現、要嘛都不出現。
-test("只指定 model 時，provider 由 pi 的預設補齊，兩個旗標成對出現", () => {
+// pi honours a command-line model selection only when provider and model are both present
+// (model-resolver.js:428); a lone flag is silently ignored. So the two appear as a pair or
+// not at all.
+test("when only model is given, provider comes from pi's defaults and both flags appear as a pair", () => {
   const args = buildPiArgs({
     sessionId: "s", config: DEFAULTS, model: "some-model",
     piDefaults: { provider: "litellm", model: "other" },
@@ -87,55 +89,57 @@ test("只指定 model 時，provider 由 pi 的預設補齊，兩個旗標成對
   assert.equal(args[args.indexOf("--model") + 1], "some-model");
 });
 
-// --- 量出來的預設：可覆寫，而且覆寫真的要進到 args 裡 ---
+// --- Measured defaults: overridable, and an override must really reach the args ---
 
-test("預設不給 bash 工具", () => {
+test("bash is not granted by default", () => {
   const args = buildPiArgs({ sessionId: "s", config: CONFIG, piDefaults: NO_PI_DEFAULTS });
   const tools = args[args.indexOf("--tools") + 1];
   assert.equal(tools, "read,write,edit");
   assert.ok(!tools.split(",").includes("bash"));
 });
 
-// schema 收了一個覆寫、buildPiArgs 卻默默丟掉，正是這個 codebase 踩過五次的那種
-// 「自己跟自己一致、對現實是錯的」缺陷。這個測試盯的就是那條路。
-test("覆寫 tools 加上 bash 時，真的會出現在 args 裡", () => {
+// A schema that accepts an override which buildPiArgs then quietly drops is exactly the
+// "internally consistent, wrong about reality" defect this codebase has hit five times.
+// This test watches that path.
+test("overriding tools to include bash really shows up in the args", () => {
   const args = buildPiArgs({ sessionId: "s", config: CONFIG, piDefaults: NO_PI_DEFAULTS, tools: "read,write,edit,bash" });
   assert.equal(args[args.indexOf("--tools") + 1], "read,write,edit,bash");
 });
 
-test("thinking 預設 off，可以覆寫成其他等級", () => {
+test("thinking defaults to off and can be overridden to another level", () => {
   const off = buildPiArgs({ sessionId: "s", config: CONFIG, piDefaults: NO_PI_DEFAULTS });
   assert.equal(off[off.indexOf("--thinking") + 1], "off");
   const high = buildPiArgs({ sessionId: "s", config: CONFIG, piDefaults: NO_PI_DEFAULTS, thinking: "high" });
   assert.equal(high[high.indexOf("--thinking") + 1], "high");
 });
 
-test("thinking 設成 null 時整個不帶 --thinking", () => {
+test("thinking set to null omits --thinking entirely", () => {
   const args = buildPiArgs({ sessionId: "s", config: CONFIG, piDefaults: NO_PI_DEFAULTS, thinking: null });
   assert.ok(!args.includes("--thinking"));
 });
 
-// pi 對不合法的 --thinking 值只印一句 warning 就丟掉（dist/cli/args.js:96-105）。
-// 靜默忽略一個被明確指定的覆寫，就是這一輪要避免的失敗形狀。
-test("不合法的 thinking 等級直接拋錯，不送給 pi 讓它靜默忽略", () => {
+// pi merely warns about an invalid --thinking value and then drops it
+// (dist/cli/args.js:96-105). Silently ignoring an explicit override is the failure shape
+// this round set out to avoid.
+test("an invalid thinking level throws instead of being handed to pi to ignore silently", () => {
   assert.throws(
     () => buildPiArgs({ sessionId: "s", config: CONFIG, piDefaults: NO_PI_DEFAULTS, thinking: "maximum" }),
     /thinking/,
   );
 });
 
-test("no_context_files 預設帶旗標，覆寫成 false 就不帶", () => {
+test("no_context_files emits the flag by default and omits it when overridden to false", () => {
   const on = buildPiArgs({ sessionId: "s", config: CONFIG, piDefaults: NO_PI_DEFAULTS });
   assert.ok(on.includes("--no-context-files"));
   const off = buildPiArgs({ sessionId: "s", config: CONFIG, piDefaults: NO_PI_DEFAULTS, noContextFiles: false });
   assert.ok(!off.includes("--no-context-files"));
 });
 
-test("append_system_prompt 預設不帶，給了就帶", () => {
+test("append_system_prompt is omitted by default and emitted when supplied", () => {
   const none = buildPiArgs({ sessionId: "s", config: CONFIG, piDefaults: NO_PI_DEFAULTS });
   assert.ok(!none.includes("--append-system-prompt"));
-  const appended = buildPiArgs({ sessionId: "s", config: CONFIG, piDefaults: NO_PI_DEFAULTS, appendSystemPrompt: "只准改指定的檔案" });
-  assert.equal(appended[appended.indexOf("--append-system-prompt") + 1], "只准改指定的檔案");
+  const appended = buildPiArgs({ sessionId: "s", config: CONFIG, piDefaults: NO_PI_DEFAULTS, appendSystemPrompt: "only touch the files named in the task book" });
+  assert.equal(appended[appended.indexOf("--append-system-prompt") + 1], "only touch the files named in the task book");
 });
 
 test("正常結束回傳 completed 判決", async () => {
@@ -311,7 +315,7 @@ test("gitDiffStat 傳字串時照舊原樣帶進判決", async () => {
 
 // --- [I2] pi 回報終局失敗時要立刻收尾，不要拖滿 timeout ---
 
-test("response success:false（推論伺服器掛了）立刻判 failed 並附上錯誤字串", async () => {
+test("response success:false (inference server down) settles as failed at once and carries the error string", async () => {
   const { dir, file } = tmpTask();
   const timeoutS = 20;
   const startedAt = Date.now();
