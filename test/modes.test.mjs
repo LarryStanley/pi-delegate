@@ -9,18 +9,18 @@ function tmpState() {
   return join(mkdtempSync(join(tmpdir(), "pi-delegate-")), "modes.json");
 }
 
-test("未設定過的專案回傳預設模式 soft", () => {
+test("a project with no mode set returns the default mode soft", () => {
   assert.equal(getMode("/x/y", tmpState()), DEFAULT_MODE);
   assert.equal(DEFAULT_MODE, "soft");
 });
 
-test("setMode 之後 getMode 讀得到", () => {
+test("getMode reads back what setMode wrote", () => {
   const file = tmpState();
   setMode("/x/y", "strict", file);
   assert.equal(getMode("/x/y", file), "strict");
 });
 
-test("不同專案互不影響", () => {
+test("different projects do not affect each other", () => {
   const file = tmpState();
   setMode("/a", "strict", file);
   setMode("/b", "off", file);
@@ -28,11 +28,11 @@ test("不同專案互不影響", () => {
   assert.equal(getMode("/b", file), "off");
 });
 
-test("不合法的模式會 throw", () => {
+test("an invalid mode throws", () => {
   assert.throws(() => setMode("/x", "turbo", tmpState()), /turbo/);
 });
 
-test("三個合法模式都接受", () => {
+test("all three valid modes are accepted", () => {
   const file = tmpState();
   for (const mode of MODES) {
     setMode("/x", mode, file);
@@ -40,13 +40,13 @@ test("三個合法模式都接受", () => {
   }
 });
 
-test("狀態檔損毀時回退到預設而不是 throw", () => {
+test("a corrupted state file falls back to the default instead of throwing", () => {
   const file = tmpState();
   writeFileSync(file, "{ not json");
   assert.equal(getMode("/x", file), DEFAULT_MODE);
 });
 
-test("寫入的是可讀的 JSON，key 為專案路徑", () => {
+test("the written file is readable JSON keyed by project path", () => {
   const file = tmpState();
   setMode("/Users/s/Code/foo", "strict", file);
   assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), { "/Users/s/Code/foo": "strict" });
