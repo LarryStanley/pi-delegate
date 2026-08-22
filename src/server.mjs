@@ -24,8 +24,9 @@ export function realGitDiffStat(cwd) {
   }
 }
 
-// spec §5 的 pi_status 要回 current_tool。pi 一次 tool call 會發
-// start → update* → end，所以「現在正在做什麼」＝ 有 start 但還沒 end 的那個。
+// spec §5 requires pi_status to return current_tool. A single pi tool call fires
+// start → update* → end, so "what's running right now" = whichever call has a start
+// but no end yet.
 function currentTool(events) {
   const open = new Map();
   for (const event of events) {
@@ -244,8 +245,9 @@ export function createToolHandlers({
           timeoutS: timeout_s ?? config.timeout_s,
           config, piDefaults,
           sessionId,
-          // thunk，不是先算好的字串：git diff 必須在 pi 跑完之後才量，否則乾淨
-          // 工作樹上永遠回報 (none)，spec §7/§11 的「逾時 ≠ 什麼都沒做」就廢了。
+          // A thunk, not a precomputed string: git diff has to be measured after pi
+          // finishes, or a clean working tree always reports (none), which defeats
+          // spec §7/§11's "timed out does not mean did nothing".
           gitDiffStat: () => gitDiffStatFn(cwd),
         }));
       } catch (error) {
@@ -272,7 +274,7 @@ export function createToolHandlers({
       return text(formatVerdict(await done));
     },
 
-    // 欄位對齊 spec §5：{status, elapsed_s, current_tool, files_touched}。
+    // Fields aligned with spec §5: {status, elapsed_s, current_tool, files_touched}.
     async pi_status({ session_id }) {
       return withSession(session_id, (entry) => {
         if (entry.verdict) {
@@ -313,9 +315,10 @@ export function createToolHandlers({
     },
 
     async pi_result({ session_id }) {
-      // 未知 session 的錯誤訊息只有一份，就是 registry.get 拋的那句。舊版在這裡
-      // 自己重寫了一次（「有效的：」vs registry 的「目前有效的：」），兩份字串已經
-      // 漂移過一次；重複實作遲早會再漂。
+      // There is exactly one error message for an unknown session: the one registry.get
+      // throws. An earlier version rewrote it here too ("valid:" vs the registry's
+      // "currently valid:"), and the two strings had already drifted apart once —
+      // a duplicated implementation like that will drift again sooner or later.
       let entry;
       try {
         entry = registry.get(session_id);
@@ -344,8 +347,9 @@ export function createToolHandlers({
         if (filter === "last_n") {
           return text(events.slice(-n).map((e) => JSON.stringify(e)).join("\n") || "(no events)");
         }
-        // 用 verdict.mjs 的同一支解析器：舊版這裡只認陣列型 content，於是
-        // 字串型 content 的訊息會出現在判決裡、卻從逐字稿消失。
+        // Uses the same parser as verdict.mjs: an earlier version here recognized only
+        // array-shaped content, so a string-shaped-content message would show up in the
+        // verdict but go missing from the transcript.
         const said = events
           .filter((e) => e.type === "message_end")
           .map((e) => assistantText(e.message))

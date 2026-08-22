@@ -28,14 +28,16 @@ test("有 agent_settled 就是 completed", () => {
   assert.equal(v.status, "completed");
 });
 
-// 迴歸測試：真實 pi 0.80.2 發的是 agent_end，不是 agent_settled。`agent_settled`
-// **不在 pi 的文件裡** —— docs/rpc.md 的事件表沒有它，pi-agent-core 的 AgentEvent
-// union（types.d.ts:360-398）也沒有；它是測試替身自己發明的名字，留在
-// TERMINAL_SUCCESS_EVENTS 裡只是前向相容，不是因為「文件裡有」。事件陣列裡刻意只放 agent_end、完全
-// 不含 agent_settled，確保 resolveStatus 不是「剛好兩個都靠 agent_settled 那條
-// 分支過」——這正是原本讓 94 個單元測試全綠、卻在真實環境把每一次成功派工都
-// 誤判成 timeout 的那個缺陷（fixture 和實作都以為 pi 會發 agent_settled）。
-test("只有 agent_end（沒有 agent_settled）也是 completed", () => {
+// Regression test: pi 0.80.2 emits agent_end, not agent_settled. `agent_settled` is **not
+// in pi's documentation** — it is absent from the event table in docs/rpc.md and from
+// pi-agent-core's AgentEvent union (types.d.ts:360-398); the name was invented by the test
+// double. It stays in TERMINAL_SUCCESS_EVENTS purely for forward compatibility, never
+// because "the docs say so". The event array here deliberately carries only agent_end and
+// no agent_settled at all, so resolveStatus cannot be passing merely because both cases
+// happen to take the agent_settled branch — which is precisely the defect that kept 94 unit
+// tests green while misjudging every successful real dispatch as a timeout (fixture and
+// implementation both believed pi would emit agent_settled).
+test("agent_end alone (with no agent_settled) also counts as completed", () => {
   const v = computeVerdict({ ...BASE, events: [ended] });
   assert.equal(v.status, "completed");
 });
@@ -120,24 +122,25 @@ function updateWithUsage(input, output) {
   };
 }
 
-test("只有串流事件（message_update）時取最後一個 message.usage（真實 pi 形狀）", () => {
+test("with streaming events only (message_update), the last message.usage is used (the real pi shape)", () => {
   const events = [updateWithUsage(10, 1), updateWithUsage(100, 42), ended];
   const v = computeVerdict({ ...BASE, events });
   assert.deepEqual(v.tokens, { input: 100, output: 42 });
 });
 
-// --- tokens 是整場總量，不是最後一則訊息的 usage ---
+// --- tokens is the run total, not the last message's usage ---
 //
-// pi 的每則 AssistantMessage 各自帶自己那一次 API 呼叫的 usage，**不是累計值**。
-// 依據是 pi 自己的 getSessionStats()（dist/core/agent-session.js:2364-2404）：
+// Each pi AssistantMessage carries the usage of its own API call; it is **not cumulative**.
+// The evidence is pi's own getSessionStats() (dist/core/agent-session.js:2364-2404):
 //   for (const message of state.messages)
 //     if (message.role === "assistant") { totalInput += usage.input; totalOutput += usage.output; }
-// 它要自己加總，就證明了 usage 不是累計的。舊版只讀最後一個帶 usage 的事件，
-// 於是多輪派工的 output 被嚴重低報、input 變成「收工當下的 context 長度」。
+// The fact that it has to add them up proves usage is not a running total. The old version
+// read only the last event carrying usage, so a multi-turn dispatch under-reported output
+// badly and input became "the context size at the moment of settling".
 //
-// 加總對象是 message_end（一則訊息一次），不是 message_update（串流期間發很多次，
-// 加起來會重複計數）—— agent-session.js:277 也是在 message_end 上把訊息
-// appendMessage 進 state.messages，也就是 getSessionStats 加總的那一份。
+// What is summed is message_end (once per message), not message_update (emitted many times
+// while streaming, which would double-count) — agent-session.js:277 is likewise where a
+// message_end appends the message into state.messages, the very array getSessionStats sums.
 function assistantMessageEnd(input, output, text = "…") {
   return {
     type: "message_end",
@@ -154,7 +157,7 @@ function assistantMessageEnd(input, output, text = "…") {
   };
 }
 
-test("多輪派工的 tokens 是所有 assistant 訊息的總和，不是最後一則", () => {
+test("tokens for a multi-turn dispatch is the sum over all assistant messages, not the last one", () => {
   const events = [
     assistantMessageEnd(100, 20, "第一輪"),
     { type: "tool_execution_start", toolCallId: "c1", toolName: "write", args: { path: "a.ts" } },
@@ -164,10 +167,10 @@ test("多輪派工的 tokens 是所有 assistant 訊息的總和，不是最後�
   ];
   const v = computeVerdict({ ...BASE, events });
   assert.deepEqual(v.tokens, { input: 750, output: 105 });
-  assert.notDeepEqual(v.tokens, { input: 400, output: 50 }, "不能只回報最後一則訊息的 usage");
+  assert.notDeepEqual(v.tokens, { input: 400, output: 50 }, "must not report only the last message usage");
 });
 
-test("串流中的 message_update 不會被重複計入總和", () => {
+test("message_update events during streaming are not double-counted in the sum", () => {
   const events = [
     updateWithUsage(100, 10),
     updateWithUsage(100, 20),
@@ -177,7 +180,7 @@ test("串流中的 message_update 不會被重複計入總和", () => {
   assert.deepEqual(computeVerdict({ ...BASE, events }).tokens, { input: 100, output: 20 });
 });
 
-test("user / toolResult 訊息的 message_end 不計入 token 總和", () => {
+test("message_end for user / toolResult messages does not count toward the token sum", () => {
   const events = [
     { type: "message_end", message: { role: "user", content: "hi", usage: { input: 999, output: 999 } } },
     assistantMessageEnd(10, 5),
