@@ -107,6 +107,21 @@ export function createToolHandlers({
     }
   }
 
+  function failedVerdict(sessionId, error) {
+    return {
+      status: "failed",
+      write_count: 0,
+      files_written: [],
+      files_read_unrequested: [],
+      git_diff_stat: "",
+      duration_s: 0,
+      tokens: { input: 0, output: 0 },
+      session_id: sessionId,
+      last_message: `dispatch 失敗：${error?.message ?? error}`,
+      last_message_truncated: false,
+    };
+  }
+
   return {
     async pi_dispatch({ task_file, cwd, model = DEFAULT_MODEL, mode = "sync", timeout_s = DEFAULT_TIMEOUT_S }) {
       if (!existsSync(task_file)) return text(`任務書不存在：${task_file}`, true);
@@ -127,18 +142,7 @@ export function createToolHandlers({
           if (mode === "async") appendEventsLog(verdict);
         })
         .catch((error) => {
-          const verdict = {
-            status: "failed",
-            write_count: 0,
-            files_written: [],
-            files_read_unrequested: [],
-            git_diff_stat: "",
-            duration_s: 0,
-            tokens: { input: 0, output: 0 },
-            session_id: sessionId,
-            last_message: `dispatch 失敗：${error?.message ?? error}`,
-            last_message_truncated: false,
-          };
+          const verdict = failedVerdict(sessionId, error);
           registry.update(sessionId, { verdict });
           if (mode === "async") appendEventsLog(verdict);
         });
@@ -173,7 +177,13 @@ export function createToolHandlers({
       if (!registry.has(session_id)) {
         return text(`未知的 session_id "${session_id}"。有效的：${registry.ids().join(", ") || "(無)"}`, true);
       }
-      return text(formatVerdict(await registry.get(session_id).done));
+      const entry = registry.get(session_id);
+      if (entry.verdict) return text(formatVerdict(entry.verdict));
+      try {
+        return text(formatVerdict(await entry.done));
+      } catch (error) {
+        return text(formatVerdict(failedVerdict(session_id, error)));
+      }
     },
 
     async pi_transcript({ session_id, filter = "text", n = 20 }) {

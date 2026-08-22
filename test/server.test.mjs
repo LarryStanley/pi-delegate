@@ -123,6 +123,24 @@ test("pi_result 取回 async 派工的判決", async () => {
   assert.match(result.content[0].text, /status:\s+completed/);
 });
 
+test("pi_result 對 reject 的 done 回傳失敗判決而非拋出錯誤", async () => {
+  const task = tmpFile("TASK.md");
+  writeFileSync(task, "改 a.ts");
+  // rejects on a later tick so the registry's `verdict` field is still null
+  // when pi_result is called — forces pi_result to await entry.done itself
+  // instead of short-circuiting on an already-stored verdict.
+  const dispatchFn = async ({ sessionId }) => ({
+    handle: { sessionId, steer() {}, async abort() {}, state: () => ({ running: true }) },
+    done: new Promise((_, reject) => setTimeout(() => reject(new Error("boom")), 20)),
+  });
+  const { handlers } = setup(dispatchFn);
+  const started = await handlers.pi_dispatch({ task_file: task, cwd: "/tmp", mode: "async" });
+  const sessionId = started.content[0].text.match(/session_id:\s*(\S+)/)[1];
+  const result = await handlers.pi_result({ session_id: sessionId });
+  assert.equal(result.isError, undefined);
+  assert.match(result.content[0].text, /status:\s+failed/);
+});
+
 // --- fix round 1: coverage for pi_status / pi_steer / pi_abort / pi_transcript / pi_stats ---
 
 function buildTranscriptEvents() {
@@ -161,10 +179,14 @@ test("pi_status 回傳已完成派工的狀態", async () => {
 });
 
 test("pi_status 對未知 session_id 回錯誤並列出有效 id", async () => {
+  const task = tmpFile("TASK.md");
+  writeFileSync(task, "改 a.ts");
   const { handlers } = setup(fakeDispatch());
+  const knownId = await dispatchAndGetSessionId(handlers, task, "sync");
   const result = await handlers.pi_status({ session_id: "ghost" });
   assert.equal(result.isError, true);
   assert.match(result.content[0].text, /ghost/);
+  assert.ok(result.content[0].text.includes(knownId), "應列出有效的 session id");
 });
 
 test("pi_steer 把訊息送進 handle.steer", async () => {
@@ -188,10 +210,14 @@ test("pi_steer 把訊息送進 handle.steer", async () => {
 });
 
 test("pi_steer 對未知 session_id 回錯誤", async () => {
+  const task = tmpFile("TASK.md");
+  writeFileSync(task, "改 a.ts");
   const { handlers } = setup(fakeDispatch());
+  const knownId = await dispatchAndGetSessionId(handlers, task, "sync");
   const result = await handlers.pi_steer({ session_id: "ghost", message: "hi" });
   assert.equal(result.isError, true);
   assert.match(result.content[0].text, /ghost/);
+  assert.ok(result.content[0].text.includes(knownId), "應列出有效的 session id");
 });
 
 test("pi_abort 呼叫 handle.abort", async () => {
@@ -215,10 +241,14 @@ test("pi_abort 呼叫 handle.abort", async () => {
 });
 
 test("pi_abort 對未知 session_id 回錯誤", async () => {
+  const task = tmpFile("TASK.md");
+  writeFileSync(task, "改 a.ts");
   const { handlers } = setup(fakeDispatch());
+  const knownId = await dispatchAndGetSessionId(handlers, task, "sync");
   const result = await handlers.pi_abort({ session_id: "ghost" });
   assert.equal(result.isError, true);
   assert.match(result.content[0].text, /ghost/);
+  assert.ok(result.content[0].text.includes(knownId), "應列出有效的 session id");
 });
 
 test("pi_transcript filter=text 只回傳 assistant 文字", async () => {
@@ -262,10 +292,14 @@ test("pi_transcript 在 handle 沒有 events 時退回空陣列", async () => {
 });
 
 test("pi_transcript 對未知 session_id 回錯誤", async () => {
+  const task = tmpFile("TASK.md");
+  writeFileSync(task, "改 a.ts");
   const { handlers } = setup(fakeDispatch());
+  const knownId = await dispatchAndGetSessionId(handlers, task, "sync");
   const result = await handlers.pi_transcript({ session_id: "ghost" });
   assert.equal(result.isError, true);
   assert.match(result.content[0].text, /ghost/);
+  assert.ok(result.content[0].text.includes(knownId), "應列出有效的 session id");
 });
 
 test("pi_stats 回傳已完成派工的 token 與耗時", async () => {
@@ -293,8 +327,12 @@ test("pi_stats 對還在跑的派工回傳 running", async () => {
 });
 
 test("pi_stats 對未知 session_id 回錯誤", async () => {
+  const task = tmpFile("TASK.md");
+  writeFileSync(task, "改 a.ts");
   const { handlers } = setup(fakeDispatch());
+  const knownId = await dispatchAndGetSessionId(handlers, task, "sync");
   const result = await handlers.pi_stats({ session_id: "ghost" });
   assert.equal(result.isError, true);
   assert.match(result.content[0].text, /ghost/);
+  assert.ok(result.content[0].text.includes(knownId), "應列出有效的 session id");
 });
