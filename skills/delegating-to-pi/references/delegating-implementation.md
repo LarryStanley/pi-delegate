@@ -106,6 +106,9 @@ anyway), or just do a real `npm install`.
 ## Mechanism three: cut a seam
 
 pi's measured ceiling for editable file size is around 700 lines (past that, the budget gets spent on reading).
+This bounds **one file being edited**, not how much work a dispatch may carry: a dispatch handling three files at
+once measured cleaner and 12x cheaper in input tokens than the same job sliced down to one small file. See the
+sizing section of SKILL.md.
 For an existing large file:
 
 **You decide the seam, pi fills in the content.** Concretely: extract the behaviour being added into a **new

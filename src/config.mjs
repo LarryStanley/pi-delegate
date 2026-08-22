@@ -15,7 +15,19 @@ import { join, dirname } from "node:path";
 // Layer 3 is the default path, not a fallback: install the plugin, configure nothing, and
 // pi_dispatch hits whatever model the user already uses (anthropic, openai, ollama, a
 // local server — all the same).
-export const DEFAULT_TIMEOUT_S = 1500;
+// 20 minutes. Measured: a three-file task with tests generates ~31k output tokens, which
+// at a local model's 30-60 tok/s is 9-17 minutes of generation alone, before prefill, tool
+// round-trips or thinking.
+//
+// This is a backstop for a wedged dispatch, NOT a target to fit the work into. Shrinking a
+// task so it finishes inside a short ceiling measurably makes things worse: the same job
+// scoped down to one 30-line file ran the ceiling out anyway, rewrote a scratch file 21
+// times, and burned 12x the input tokens of the larger version — which meanwhile produced
+// correct code. The sizing section of skills/delegating-to-pi/SKILL.md has the numbers.
+//
+// Watch a long dispatch with pi_status (cheap, and it warns when pi starts rewriting the
+// same file) rather than by lowering this.
+export const DEFAULT_TIMEOUT_S = 1200;
 
 // Speculative-decoding draft/assistant models are co-pilots: calling one directly returns
 // HTTP 500. The concrete ids belong to whoever set them up, but the naming convention is

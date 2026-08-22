@@ -23,8 +23,40 @@ The test is not "does this need judgment" — it's structural: **"is this a char
 Measured: moving 33 files' declarations took a 46-minute dispatch + 5 timeouts + drove the endpoint down to 14.6 tok/s (normally 50),
 while a deterministic script finished in seconds at zero load. **It needs no context understanding, so it should never pass through a model at all.**
 
-**"pi can't handle this" is not a reason to do it yourself — it's a signal to split the work.** pi can't reliably edit a file past roughly 700 lines —
-extract the part that needs changing into a new file, then hand pi the whole new file.
+**"pi can't handle this" is not a reason to do it yourself.** Sometimes it means split the work — but reach for that
+far less often than feels natural, because splitting has a measured cost of its own (see below).
+The one place the 700-line rule genuinely applies is **editing a single existing file**: past roughly 700 lines pi
+spends its budget re-reading. Extract the part that needs changing into a new file and hand pi the whole new file.
+That is a rule about *one file's size*, not about how much work a dispatch may carry.
+
+## Size the task like a subagent's, not like a slice
+
+**Give pi a whole coherent unit of work — the same thing you would hand a subagent.** Multiple files,
+implementation and tests together, the whole feature. Do not pre-slice it into pieces small enough to feel safe.
+
+This is measured, and the result went the opposite way to the intuition it replaced. The same job — a two-module
+matcher plus tests, against a fixed written contract — dispatched two ways:
+
+| | Whole task (3 files) | Sliced to one 30-line file |
+|---|---|---|
+| Outcome | ran out the clock | ran out the clock |
+| Writes | **2**, exactly as asked | **22** — the same scratch file 21 times |
+| Input tokens | **5,070** | **59,776** (12x) |
+| Scope | clean | wrote a file the task book forbade |
+| Correctness | **passed all 9 acceptance tests** | parser correct, nothing else produced |
+
+Slicing did not make it faster, safer, or cheaper. **A task far below what pi can do does not finish early — it
+spends the remaining budget on self-doubt**, writing and re-running scratch files, which is exactly the roaming
+and token burn the "keep it small" instinct was trying to prevent. The big dispatch's only shortfall was the
+clock; its code was correct.
+
+So: a dispatch that takes 15 minutes and returns working code is a success, not a problem to engineer away.
+Raise `timeout_s` before you shrink a task.
+
+**Two-stage dispatch (tests first, then implementation) is an option, not the default.** It doubles the context
+build-up and doubles the wall clock. Reach for it when you specifically need the tests to be written blind to the
+implementation — a subtle algorithm where a self-marked test would be worthless. For ordinary work, one dispatch
+carrying the contract, the implementation and the tests is both cheaper and, measured above, correct.
 
 ## How to dispatch
 
@@ -32,8 +64,8 @@ Use the MCP tools; don't assemble CLI commands by hand:
 
 | Tool | When to use it |
 |---|---|
-| `pi_dispatch` | Dispatch a task book. `mode=sync` waits for the result, `mode=async` runs it in the background |
-| `pi_status` | Check progress |
+| `pi_dispatch` | Dispatch a task book. Defaults to `mode=async` — dispatch, keep working, collect later. `mode=sync` blocks, for when your next step depends on the result |
+| `pi_status` | Where it stands: elapsed and remaining time, writes, reads, tokens — and a `spinning` warning when it is rewriting one file over and over. Compact by default so it is cheap to poll; pass `verbose` when a poll looks wrong |
 | `pi_steer` | Interject mid-run when you notice it's heading the wrong way |
 | `pi_abort` | Abort. **Re-dispatch an aborted task unchanged; only rewrite the task book after a real failure** |
 | `pi_result` | Collect the verdict of an async dispatch |
@@ -56,8 +88,16 @@ and counting what pi did means re-deriving `verdict.mjs` — a write is a
 `tool_execution_start` with the path in `args.path`, and one tool call fires 3-4 events
 that must be deduped by `toolCallId` or four writes read as twelve.
 
-**Two-stage dispatch**: dispatch the tests first (with the contract), confirm they genuinely fail, and fail where expected; then dispatch the implementation
-(with that failing test set, plus "do not touch the tests"). Put tests and implementation in the same task book and it will write tests that happen to pass whatever it wrote.
+**Two-stage dispatch**, when you have decided you need it: dispatch the tests first (with the contract), confirm they
+genuinely fail and fail where expected; then dispatch the implementation (with that failing test set, plus "do not
+touch the tests"). The risk it buys off is real — tests written alongside an implementation tend to pass whatever
+was written. Weigh that against the doubled cost, and note the cheaper guard that covers most cases: **write the
+acceptance test yourself** and run it against whatever comes back. That is your job either way, and it does not
+need a second dispatch.
+
+**While it runs**: poll `pi_status`. It is deliberately compact — counts, not lists — because every reply stays in
+your context for the rest of the session. If it reports `spinning`, pi is rewriting the same file: `pi_steer` it, and
+size the next task larger.
 
 **Model choice**: leave it unspecified to use the user's own pi default model (`~/.pi/agent/settings.json`) —
 that is the right choice almost every time. Only switch it deliberately, via `pi_dispatch`'s `provider` / `model` parameters,

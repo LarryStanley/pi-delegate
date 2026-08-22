@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { dispatch as realDispatch } from "./dispatch.mjs";
 import { createRegistry } from "./registry.mjs";
 import { serve } from "./stdio-server.mjs";
-import { formatVerdict, assistantText, writtenPaths } from "./verdict.mjs";
+import { formatVerdict, assistantText, writtenPaths, progressSummary, collapseRepeats } from "./verdict.mjs";
 import { loadConfig, loadPiDefaults, isDrafterModel } from "./config.mjs";
 import { eventsLogPath as sessionEventsLogPath } from "./events-log.mjs";
 
@@ -49,8 +49,9 @@ export const TOOL_DEFINITIONS = [
   {
     name: "pi_dispatch",
     description:
-      "Dispatch a task book to the local pi agent. mode=sync blocks until completion and returns a ~15 line verdict; " +
-      "mode=async returns a session_id immediately and notifies you when it finishes. " +
+      "Dispatch a task book to the local pi agent. Defaults to mode=async: returns a session_id immediately and " +
+      "notifies you on completion, so give pi a whole coherent unit of work the way you would a subagent. " +
+      "mode=sync blocks until completion and returns a ~15 line verdict. " +
       "Leave provider / model unset to use the user's own pi configuration (the default model in " +
       "~/.pi/agent/settings.json) — this plugin needs no separate setup. The defaults for the flags below " +
       "were measured, not guessed; read the reason before overriding one.",
@@ -71,8 +72,22 @@ export const TOOL_DEFINITIONS = [
             "pi provider name (anything in ~/.pi/agent/models.json, or any pi built-in). Omit it to use the " +
             "user's pi default.",
         },
-        mode: { type: "string", enum: ["sync", "async"], description: "Defaults to sync" },
-        timeout_s: { type: "number", description: "Timeout in seconds; defaults to 1500 (or whatever pi-delegate config.json sets)" },
+        mode: {
+          type: "string", enum: ["sync", "async"],
+          description:
+            "Defaults to async — treat pi like a subagent: hand it a whole coherent task, get on with your own " +
+            "work, poll pi_status when you want to, collect with pi_result. Blocking on sync is what pushes " +
+            "people to slice work into pieces small enough to sit and wait for, and slicing measurably makes " +
+            "things worse. Use sync only when your very next step depends on the result. Note: the completion " +
+            "notification comes from a monitor, which runs in interactive CLI sessions only — in a headless " +
+            "run, poll pi_status or use sync.",
+        },
+        timeout_s: {
+          type: "number",
+          description:
+            "Timeout in seconds; defaults to 1200 (or whatever pi-delegate config.json sets). It is a backstop " +
+            "for a wedged dispatch, not a target — raise it rather than shrinking the task to fit.",
+        },
         thinking: {
           type: "string",
           enum: THINKING_LEVELS,
@@ -105,8 +120,25 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: "pi_status",
-    description: "Check where a dispatch stands right now: is it still running, for how long, how many events so far.",
-    inputSchema: { type: "object", properties: { session_id: { type: "string" } }, required: ["session_id"] },
+    description:
+      "Check where a dispatch stands right now — running or finished, elapsed and remaining time, writes and " +
+      "reads so far, tokens spent, and a `spinning` warning when it is rewriting the same file over and over. " +
+      "Cheap enough to poll while you get on with something else.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session_id: { type: "string" },
+        verbose: {
+          type: "boolean",
+          description:
+            "Defaults to false. The compact form is counts only, because every reply stays in your context for " +
+            "the rest of the session — poll it freely. Set true to also get the file list and pi's last message, " +
+            "once a poll looks wrong and you want to see what it is actually doing. The `spinning` warning " +
+            "appears either way.",
+        },
+      },
+      required: ["session_id"],
+    },
   },
   {
     name: "pi_steer",
@@ -210,7 +242,7 @@ export function createToolHandlers({
 
   return {
     async pi_dispatch({
-      task_file, cwd, model, provider, mode = "sync", timeout_s,
+      task_file, cwd, model, provider, mode = "async", timeout_s,
       thinking, tools, no_context_files, append_system_prompt,
     }) {
       if (!existsSync(task_file)) return text(`Task book does not exist: ${task_file}`, true);
@@ -245,6 +277,7 @@ export function createToolHandlers({
       registry.add(sessionId, {
         handle: null, done: null, verdict: null,
         cwd, taskFile: task_file, model: effectiveModel, provider: effectiveProvider,
+        timeoutS: timeout_s ?? config.timeout_s,
       });
 
       let handle;
@@ -283,29 +316,40 @@ export function createToolHandlers({
         });
 
       if (mode === "async") {
-        return text(`Dispatched (async). session_id: ${sessionId}\nYou will be notified on completion; pi_status also reports progress.`);
+        return text(
+          `Dispatched (async). session_id: ${sessionId}\n` +
+          "Get on with your own work — a completion notification will arrive naming this session_id, and " +
+          `pi_result session_id=${sessionId} collects the verdict. pi_status is cheap to poll meanwhile and ` +
+          "warns if pi starts rewriting the same file. If no notification ever arrives (monitors run in " +
+          "interactive CLI sessions only), poll pi_status.",
+        );
       }
       return text(formatVerdict(await done));
     },
 
     // Fields aligned with spec §5: {status, elapsed_s, current_tool, files_touched}.
-    async pi_status({ session_id }) {
+    async pi_status({ session_id, verbose = false }) {
       return withSession(session_id, (entry) => {
         if (entry.verdict) {
           return text(JSON.stringify({
             status: entry.verdict.status,
             elapsed_s: entry.verdict.duration_s,
             current_tool: null,
-            files_touched: entry.verdict.files_written,
+            ...(verbose ? { files_touched: collapseRepeats(entry.verdict.files_written) } : { writes: entry.verdict.write_count }),
           }, null, 2));
         }
         const events = entry.handle?.events ?? [];
         const state = entry.handle?.state?.() ?? {};
+        const elapsed = state.elapsed_s ?? 0;
+        // Enough to answer "is this moving forward or going in circles" without reading the
+        // transcript. A bare {status: "running", elapsed_s} cannot: a dispatch rewriting the
+        // same scratch file for ten minutes looks exactly like one making steady progress.
         return text(JSON.stringify({
           status: "running",
-          elapsed_s: state.elapsed_s ?? 0,
+          elapsed_s: elapsed,
+          remaining_s: entry.timeoutS ? Math.max(0, entry.timeoutS - elapsed) : null,
           current_tool: currentTool(events),
-          files_touched: writtenPaths(events),
+          ...progressSummary(events, { verbose }),
         }, null, 2));
       });
     },

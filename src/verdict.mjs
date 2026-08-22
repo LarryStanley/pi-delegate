@@ -238,6 +238,67 @@ export function writtenPaths(events) {
   return uniqueToolCalls(events, WRITE_TOOLS);
 }
 
+export function readPaths(events) {
+  return uniqueToolCalls(events, READ_TOOLS);
+}
+
+// Collapse a flat write list into path + how many times it was written.
+//
+// The flat list hides the single most important signal a running dispatch can give: the
+// same file being rewritten over and over. Measured in a real dispatch — a task deliberately
+// scoped to one 30-line file — pi finished it, had nothing left to do, and spent the rest of
+// its budget writing a scratch file, running it, adjusting it and writing it again: 22
+// writes, 21 of them the same path, and input tokens 12x the equivalent larger task. The
+// data was there the whole time; `files_written` just printed the path 22 times in a row,
+// which reads as noise rather than as a spin.
+export function writeCounts(events) {
+  const counts = new Map();
+  for (const path of writtenPaths(events)) counts.set(path, (counts.get(path) ?? 0) + 1);
+  return [...counts].map(([path, count]) => ({ path, count }));
+}
+
+export function formatWriteCounts(counts) {
+  return counts.map(({ path, count }) => (count > 1 ? `${path} (x${count})` : path));
+}
+
+// Same collapse, straight off a flat list — what formatVerdict has to work with.
+export function collapseRepeats(paths = []) {
+  const counts = new Map();
+  for (const path of paths) counts.set(path, (counts.get(path) ?? 0) + 1);
+  return formatWriteCounts([...counts].map(([path, count]) => ({ path, count })));
+}
+
+// What pi_status reports for a dispatch still in flight. Its job is to answer one question
+// a bare "running" cannot: is this moving forward, or going in circles?
+// Compact by default. pi_status exists to be called repeatedly while a dispatch runs, and
+// everything it returns lands in the caller's context permanently — a status that dumps the
+// path list and the last message on every poll costs more context than the dispatch saved.
+// So the default answers only "is it moving, and roughly where", and `verbose` opts into the
+// rest when a poll actually looks wrong.
+//
+// `spinning` is the exception: it is never omitted, because it is the one thing the caller
+// cannot work out from the numbers and the one thing worth interrupting for.
+export function progressSummary(events, { verbose = false } = {}) {
+  const counts = writeCounts(events);
+  const repeated = counts.filter(({ count }) => count > 2);
+  const summary = {
+    writes: writtenPaths(events).length,
+    distinct_files: counts.length,
+    reads: readPaths(events).length,
+    tokens: totalUsage(events),
+  };
+  if (repeated.length > 0) {
+    summary.spinning =
+      `Rewriting ${repeated.map((r) => `${r.path} (x${r.count})`).join(", ")} — usually a task with ` +
+      "nothing left to do rather than a hard problem. pi_steer can redirect it; a larger task avoids it.";
+  }
+  if (verbose) {
+    summary.files_touched = formatWriteCounts(counts);
+    summary.last_message = lastAssistantText(events).slice(0, 300);
+  }
+  return summary;
+}
+
 export function computeVerdict({
   events = [],
   aborted = false,
@@ -301,7 +362,7 @@ export function formatVerdict(v) {
   const lines = [
     `status:                 ${v.status}`,
     `write_count:            ${v.write_count}`,
-    `files_written:          ${list(v.files_written)}`,
+    `files_written:          ${list(collapseRepeats(v.files_written))}`,
     `files_read_unrequested: ${list(v.files_read_unrequested)}`,
     `git_diff_stat:          ${v.git_diff_stat || "(none)"}`,
     `duration_s:             ${v.duration_s}`,

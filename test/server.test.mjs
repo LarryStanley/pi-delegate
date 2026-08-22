@@ -284,11 +284,16 @@ test("pi_status returns the four spec §5 fields for a completed dispatch", asyn
   const sessionId = await dispatchAndGetSessionId(handlers, task, "sync");
   const status = await handlers.pi_status({ session_id: sessionId });
   const parsed = JSON.parse(status.content[0].text);
-  assert.deepEqual(Object.keys(parsed).sort(), ["current_tool", "elapsed_s", "files_touched", "status"]);
+  assert.deepEqual(Object.keys(parsed).sort(), ["current_tool", "elapsed_s", "status", "writes"]);
   assert.equal(parsed.status, "completed");
   assert.equal(parsed.elapsed_s, 3);
   assert.equal(parsed.current_tool, null);
-  assert.deepEqual(parsed.files_touched, ["a.ts"]);
+  assert.equal(parsed.writes, 1);
+
+  // The path list is behind verbose for the finished case too — the compact reply is what
+  // gets polled, and a finished dispatch's paths are already in its verdict.
+  const verbose = JSON.parse((await handlers.pi_status({ session_id: sessionId, verbose: true })).content[0].text);
+  assert.deepEqual(verbose.files_touched, ["a.ts"]);
 });
 
 test("pi_status returns running / the tool in progress / files already written for a dispatch still running", async () => {
@@ -310,12 +315,21 @@ test("pi_status returns running / the tool in progress / files already written f
   const { handlers } = setup(dispatchFn);
   const sessionId = await dispatchAndGetSessionId(handlers, task);
   const parsed = JSON.parse((await handlers.pi_status({ session_id: sessionId })).content[0].text);
+  // Compact by default: counts, not lists. pi_status is meant to be polled, and every
+  // reply stays in the caller's context for the rest of the session.
   assert.deepEqual(parsed, {
     status: "running",
     elapsed_s: 7,
+    remaining_s: parsed.remaining_s,
     current_tool: "edit",
-    files_touched: ["a.ts", "b.ts"],
+    writes: 2,
+    distinct_files: 2,
+    reads: 0,
+    tokens: { input: 0, output: 0 },
   });
+
+  const verbose = JSON.parse((await handlers.pi_status({ session_id: sessionId, verbose: true })).content[0].text);
+  assert.deepEqual(verbose.files_touched, ["a.ts", "b.ts"]);
 });
 
 test("pi_status returns an error listing the valid id for an unknown session_id", async () => {
