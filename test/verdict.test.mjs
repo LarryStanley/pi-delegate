@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { computeVerdict, formatVerdict, assistantText, LAST_MESSAGE_LIMIT } from "../src/verdict.mjs";
 
 const BASE = {
@@ -77,6 +79,69 @@ test("a file read that the task book never named lands in files_read_unrequested
   const events = [readStart("r1", "src/a.ts"), readStart("r2", "src/other.ts"), settled];
   const v = computeVerdict({ ...BASE, events, requestedFiles: ["src/a.ts"] });
   assert.deepEqual(v.files_read_unrequested, ["src/other.ts"]);
+});
+
+// Regression tests for the roaming detector's real-world failure: pi reports read paths as
+// whatever the model wrote (often absolute), while extractRequestedFiles() scrapes only
+// relative strings out of the task book body. A plain Set membership test between those two
+// shapes never matches, so every read was flagged, always — the detector never actually
+// detected roaming. These use a directory under /tmp deliberately: on macOS /tmp is a
+// symlink to /private/tmp, which is exactly the mismatch that broke the naive fix (resolve
+// without realpath) in the real dispatch this bug was found from.
+test("an absolute read of a file the task book names relatively is not flagged as roaming", () => {
+  const tmpDir = mkdtempSync("/tmp/pi-delegate-verdict-test-");
+  try {
+    const absPath = join(tmpDir, "slugify.mjs");
+    writeFileSync(absPath, "export default function slugify() {}\n");
+    const events = [readStart("r1", absPath), settled];
+    const v = computeVerdict({ ...BASE, events, cwd: tmpDir, requestedFiles: ["slugify.mjs"] });
+    assert.deepEqual(v.files_read_unrequested, []);
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("the task book itself is never flagged, even though its own filename never appears in its own body", () => {
+  const tmpDir = mkdtempSync("/tmp/pi-delegate-verdict-test-");
+  try {
+    const taskFile = join(tmpDir, "TASK.md");
+    // Deliberately does not mention "TASK.md" anywhere in the body, and .md is not even in
+    // extractRequestedFiles()'s extension list — this must be requested unconditionally.
+    writeFileSync(taskFile, "Read slugify.mjs and rename its export.\n");
+    const events = [readStart("r1", taskFile), settled];
+    const v = computeVerdict({ ...BASE, events, cwd: tmpDir, taskFile, requestedFiles: [] });
+    assert.deepEqual(v.files_read_unrequested, []);
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("a genuinely unrequested file is still flagged after normalization, even reported as absolute", () => {
+  const tmpDir = mkdtempSync("/tmp/pi-delegate-verdict-test-");
+  try {
+    const taskFile = join(tmpDir, "TASK.md");
+    writeFileSync(taskFile, "Read slugify.mjs and rename its export.\n");
+    const requestedAbs = join(tmpDir, "slugify.mjs");
+    writeFileSync(requestedAbs, "export default function slugify() {}\n");
+    const roamedAbs = join(tmpDir, "secrets.env");
+    writeFileSync(roamedAbs, "SECRET=1\n");
+    const events = [
+      readStart("r1", taskFile),
+      readStart("r2", requestedAbs),
+      readStart("r3", roamedAbs),
+      settled,
+    ];
+    const v = computeVerdict({
+      ...BASE,
+      events,
+      cwd: tmpDir,
+      taskFile,
+      requestedFiles: ["slugify.mjs"],
+    });
+    assert.deepEqual(v.files_read_unrequested, [roamedAbs]);
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
 });
 
 test("a final assistant message over the limit is truncated and flagged", () => {

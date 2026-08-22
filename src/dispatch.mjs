@@ -194,6 +194,8 @@ export async function dispatch({
       stderr,
       exitCode,
       requestedFiles: extractRequestedFiles(taskFile),
+      cwd,
+      taskFile,
       gitDiffStat: resolveGitDiffStat(),
       durationS: Math.round((Date.now() - startedAt) / 1000),
       sessionId,

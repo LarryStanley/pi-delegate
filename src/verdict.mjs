@@ -1,9 +1,58 @@
+import { realpathSync } from "node:fs";
+import { isAbsolute, resolve as resolvePath } from "node:path";
+
 export const LAST_MESSAGE_LIMIT = 1000;
 export const STDERR_TAIL_CHARS = 500;
 export const STDERR_TAIL_LINES = 5;
 
 const WRITE_TOOLS = new Set(["write", "edit"]);
 const READ_TOOLS = new Set(["read"]);
+
+// files_read_unrequested exists to catch roaming: pi reading files the task book never
+// named. Verified against the shipped artifact (@earendil-works/pi-agent-core
+// dist/agent-loop.js:266-271, executeToolCallsSequential/-Parallel): the `args` on a
+// tool_execution_start event is `toolCall.arguments` — the literal, unresolved arguments
+// the model produced for its tool call. pi does NOT normalize this to an absolute path
+// before emitting it; resolution to an absolute path (resolveReadPathAsync/resolveToCwd,
+// dist/core/tools/path-utils.js) happens only inside the tool's own execute(), for actual
+// file access, and never flows back into the event. So whatever the model chose to write —
+// relative or absolute — is exactly what shows up here. A real dispatch showed this is not
+// hypothetical: pi was told (via the initial prompt) to "Read /tmp/.../TASK.md", so it
+// called read with that exact absolute string, while extractRequestedFiles() below only
+// ever produces relative strings scraped out of the task book body. A plain Set membership
+// test between an absolute string and a relative string can never match, so every read pi
+// performed was reported as "unrequested" — the feature had degraded to "list all reads".
+//
+// The fix is to resolve both sides to the same absolute, symlink-resolved path before
+// comparing:
+//
+// - Resolve relative paths against `cwd`, not against this process's own process.cwd().
+// - Then realpath() the result. This matters specifically because of how the child
+//   process's own working directory gets established: dispatch() passes `cwd` to
+//   node:child_process's spawn() as a plain string (e.g. "/tmp/pi-trial-zlCu"), and pi
+//   resolves its own relative paths against ITS process.cwd() (confirmed in pi's shipped
+//   CLI code — dist/cli/file-processor.js:17 and dist/cli/startup-ui.js:47 both call
+//   `process.cwd()` directly to seed path resolution). Node's process.cwd() calls the OS
+//   getcwd(), which returns the PHYSICAL path, not the logical one chdir() was given. On
+//   macOS, /tmp is a symlink to /private/tmp, so a child spawned with
+//   `{ cwd: "/tmp/pi-trial-zlCu" }` reports its own process.cwd() as
+//   "/private/tmp/pi-trial-zlCu" — and every relative path pi resolves lands under
+//   /private/tmp, while our own side (never having chdir'd) still has the /tmp string. Two
+//   representations of the identical file would otherwise never string-match.
+// - realpath() can throw (ENOENT) for a path that does not exist on disk — a requested
+//   filename scraped from the task book body is not guaranteed to exist (typos, files not
+//   yet created). Normalization must never throw in that case: fall back to the resolved
+//   (non-realpath'd) path instead, so a missing file still normalizes to *some* deterministic
+//   value rather than aborting verdict computation. Both sides use the same fallback, so
+//   the comparison stays symmetric even when realpath can't run.
+function normalizePath(p, cwd) {
+  const abs = isAbsolute(p) ? p : resolvePath(cwd, p);
+  try {
+    return realpathSync(abs);
+  } catch {
+    return abs;
+  }
+}
 
 // pi 0.80.2's read / write / edit tool schemas all have only `path`
 // (`dist/core/tools/{read,write,edit}.js`: `path: Type.String({ description: "Path to the file to …" })`).
@@ -197,13 +246,21 @@ export function computeVerdict({
   stderr = "",
   exitCode = null,
   requestedFiles = [],
+  cwd = process.cwd(),
+  taskFile = null,
   gitDiffStat = "",
   durationS = 0,
   sessionId = "",
 }) {
   const filesWritten = writtenPaths(events);
   const filesRead = uniqueToolCalls(events, READ_TOOLS);
-  const requested = new Set(requestedFiles);
+
+  // The task book itself is always requested, whether or not its own filename happens to
+  // appear inside its own body (it usually doesn't — extractRequestedFiles() scrapes code
+  // filenames by extension, and a task book is typically a .md file, which isn't even in
+  // that extension list). pi reading its own instructions is not roaming.
+  const requested = new Set(requestedFiles.map((p) => normalizePath(p, cwd)));
+  if (taskFile) requested.add(normalizePath(taskFile, cwd));
 
   const raw = lastAssistantText(events);
   const truncated = raw.length > LAST_MESSAGE_LIMIT;
@@ -213,7 +270,7 @@ export function computeVerdict({
     status: resolveStatus({ aborted, timedOut, failure: resolvedFailure, events }),
     write_count: filesWritten.length,
     files_written: filesWritten,
-    files_read_unrequested: filesRead.filter((p) => !requested.has(p)),
+    files_read_unrequested: filesRead.filter((p) => !requested.has(normalizePath(p, cwd))),
     git_diff_stat: gitDiffStat,
     duration_s: durationS,
     tokens: totalUsage(events),
