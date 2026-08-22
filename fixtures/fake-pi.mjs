@@ -20,7 +20,7 @@ const assistantMessage = (text, { input = 10, output = 5 } = {}) => ({
   role: "assistant",
   content: [{ type: "text", text }],
   api: "openai-completions",
-  provider: "omlx",
+  provider: "fake-provider",
   model: "fake",
   usage: {
     input,
@@ -72,7 +72,7 @@ if (has("--model-error")) {
     role: "assistant",
     content: [],
     api: "openai-completions",
-    provider: "omlx",
+    provider: "fake-provider",
     model: "nope",
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
     stopReason: "error",
@@ -98,7 +98,7 @@ if (has("--model-error")) {
   }, 400);
   setInterval(() => {}, 1000);
 } else if (has("--api-error")) {
-  // 模擬「omlx 掛了 / model id 打錯」：pi 的 rpc mode 對 prompt 的 preflight 失敗
+  // 模擬「推論伺服器掛了 / model id 打錯」：pi 的 rpc mode 對 prompt 的 preflight 失敗
   // 會吐一個 {type:"response", command:"prompt", success:false, error} 然後**繼續活著**
   // 等下一個指令（rpc mode 刻意不 exit）。形狀取自 dist/modes/rpc/rpc-types.d.ts 的
   // RpcResponse union 最後一支與 rpc-mode.js:37 的 error() helper。
@@ -107,7 +107,7 @@ if (has("--model-error")) {
       type: "response",
       command: "prompt",
       success: false,
-      error: "omlx: connect ECONNREFUSED 127.0.0.1:8000",
+      error: "provider: connect ECONNREFUSED 127.0.0.1:8000",
     });
   });
   setInterval(() => {}, 1000);
@@ -150,17 +150,19 @@ if (has("--model-error")) {
         // NOTE (deviation from task-6-brief.md): the brief's condition was
         // `command.type === "steer" || command.type === "prompt"`. dispatch()
         // sends a {type:"prompt"} immediately on spawn, so that condition would
-        // answer the initial prompt, emit agent_settled, and exit before the
+        // answer the initial prompt, emit its terminal event, and exit before the
         // test ever calls handle.steer() — the steer assertion could never
         // observe its own message. Restricting to "steer" only forces the fake
         // to wait for the actual steer write, which is the behavior the test
         // is meant to prove.
         if (command.type === "steer") {
           emit({ type: "message_end", message: assistantMessage(`收到：${command.message}`) });
-          // 真實 pi 0.80.2 發的是 agent_end，不是 agent_settled（文件裡有
-          // agent_settled，但實跑 `pi --mode rpc` 從沒看過）。payload 就用
-          // 裸物件：computeVerdict 只看 e.type，不讀 agent_end 的欄位，帶著
-          // messages 只是徒增假象的真實感，卻沒有測試在驗證它。
+          // 真實 pi 0.80.2 發的是 agent_end。`agent_settled` **不在 pi 的文件裡**
+          // ——docs/rpc.md 的事件表沒有它，pi-agent-core 的 AgentEvent union
+          // （types.d.ts:360-398）也沒有；那個名字從頭到尾是這個替身自己發明的
+          // （src/verdict.mjs 的 TERMINAL_SUCCESS_EVENTS 已經更正過同一句話，
+          // 這裡是後來漂掉的第二份）。payload 就用裸物件：computeVerdict 只看
+          // e.type，不讀 agent_end 的欄位，帶著 messages 只是徒增假象的真實感。
           emit({ type: "agent_end" });
           process.exit(0);
         }

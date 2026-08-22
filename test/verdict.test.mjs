@@ -28,8 +28,10 @@ test("有 agent_settled 就是 completed", () => {
   assert.equal(v.status, "completed");
 });
 
-// 迴歸測試：真實 pi 0.80.2 發的是 agent_end，不是 agent_settled（後者只存在於
-// 文件，實跑 `pi --mode rpc` 從沒出現過）。事件陣列裡刻意只放 agent_end、完全
+// 迴歸測試：真實 pi 0.80.2 發的是 agent_end，不是 agent_settled。`agent_settled`
+// **不在 pi 的文件裡** —— docs/rpc.md 的事件表沒有它，pi-agent-core 的 AgentEvent
+// union（types.d.ts:360-398）也沒有；它是測試替身自己發明的名字，留在
+// TERMINAL_SUCCESS_EVENTS 裡只是前向相容，不是因為「文件裡有」。事件陣列裡刻意只放 agent_end、完全
 // 不含 agent_settled，確保 resolveStatus 不是「剛好兩個都靠 agent_settled 那條
 // 分支過」——這正是原本讓 94 個單元測試全綠、卻在真實環境把每一次成功派工都
 // 誤判成 timeout 的那個缺陷（fixture 和實作都以為 pi 會發 agent_settled）。
@@ -118,10 +120,70 @@ function updateWithUsage(input, output) {
   };
 }
 
-test("token 用量取最後一個事件的 message.usage（真實 pi 形狀）", () => {
+test("只有串流事件（message_update）時取最後一個 message.usage（真實 pi 形狀）", () => {
   const events = [updateWithUsage(10, 1), updateWithUsage(100, 42), ended];
   const v = computeVerdict({ ...BASE, events });
   assert.deepEqual(v.tokens, { input: 100, output: 42 });
+});
+
+// --- tokens 是整場總量，不是最後一則訊息的 usage ---
+//
+// pi 的每則 AssistantMessage 各自帶自己那一次 API 呼叫的 usage，**不是累計值**。
+// 依據是 pi 自己的 getSessionStats()（dist/core/agent-session.js:2364-2404）：
+//   for (const message of state.messages)
+//     if (message.role === "assistant") { totalInput += usage.input; totalOutput += usage.output; }
+// 它要自己加總，就證明了 usage 不是累計的。舊版只讀最後一個帶 usage 的事件，
+// 於是多輪派工的 output 被嚴重低報、input 變成「收工當下的 context 長度」。
+//
+// 加總對象是 message_end（一則訊息一次），不是 message_update（串流期間發很多次，
+// 加起來會重複計數）—— agent-session.js:277 也是在 message_end 上把訊息
+// appendMessage 進 state.messages，也就是 getSessionStats 加總的那一份。
+function assistantMessageEnd(input, output, text = "…") {
+  return {
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text }],
+      api: "openai-completions",
+      provider: "fake-provider",
+      model: "fake",
+      usage: { input, output, cacheRead: 0, cacheWrite: 0, totalTokens: input + output, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: "stop",
+      timestamp: 0,
+    },
+  };
+}
+
+test("多輪派工的 tokens 是所有 assistant 訊息的總和，不是最後一則", () => {
+  const events = [
+    assistantMessageEnd(100, 20, "第一輪"),
+    { type: "tool_execution_start", toolCallId: "c1", toolName: "write", args: { path: "a.ts" } },
+    assistantMessageEnd(250, 35, "第二輪"),
+    assistantMessageEnd(400, 50, "第三輪"),
+    ended,
+  ];
+  const v = computeVerdict({ ...BASE, events });
+  assert.deepEqual(v.tokens, { input: 750, output: 105 });
+  assert.notDeepEqual(v.tokens, { input: 400, output: 50 }, "不能只回報最後一則訊息的 usage");
+});
+
+test("串流中的 message_update 不會被重複計入總和", () => {
+  const events = [
+    updateWithUsage(100, 10),
+    updateWithUsage(100, 20),
+    assistantMessageEnd(100, 20),
+    ended,
+  ];
+  assert.deepEqual(computeVerdict({ ...BASE, events }).tokens, { input: 100, output: 20 });
+});
+
+test("user / toolResult 訊息的 message_end 不計入 token 總和", () => {
+  const events = [
+    { type: "message_end", message: { role: "user", content: "hi", usage: { input: 999, output: 999 } } },
+    assistantMessageEnd(10, 5),
+    ended,
+  ];
+  assert.deepEqual(computeVerdict({ ...BASE, events }).tokens, { input: 10, output: 5 });
 });
 
 // 容錯分支：萬一某個版本真的把 usage 提到事件頂層也要讀得到。這是 fallback，
@@ -158,9 +220,9 @@ test("formatVerdict 輸出不超過 20 行且含所有欄位", () => {
 // --- [I2] pi 回報的終局失敗 ---
 
 test("failure 非空時就是 failed，即使事件流裡沒有任何終局事件", () => {
-  const v = computeVerdict({ ...BASE, failure: "omlx: connect ECONNREFUSED" });
+  const v = computeVerdict({ ...BASE, failure: "provider: connect ECONNREFUSED" });
   assert.equal(v.status, "failed");
-  assert.equal(v.failure, "omlx: connect ECONNREFUSED");
+  assert.equal(v.failure, "provider: connect ECONNREFUSED");
 });
 
 test("aborted / timedOut 仍優先於 failure", () => {

@@ -53,14 +53,43 @@ function lastAssistantText(events) {
 }
 
 // usage 掛在 AssistantMessage 上，不是事件的頂層欄位：
-//   @earendil-works/pi-ai types.d.ts → `interface AssistantMessage { … usage: Usage … }`
-//   @earendil-works/pi-agent-core types.d.ts → AgentEvent 的 message_update / message_end
-//   只有 `message` 與 `assistantMessageEvent`，沒有 `usage`。
+//   @earendil-works/pi-ai types.d.ts:270-283 → `interface AssistantMessage { … usage: Usage … }`
+//   @earendil-works/pi-agent-core types.d.ts:360-398 → AgentEvent 的 message_update /
+//   message_end 只有 `message` 與 `assistantMessageEvent`，沒有 `usage`。
 // 舊版讀 `events[i].usage`，而 fixtures/fake-pi.mjs 自己發明了頂層 usage —— 替身跟
 // 實作源自同一個未經查證的假設，所以測試全綠、真實派工卻永遠 `in 0 / out 0`。
-// 後面那個 `?? events[i]?.usage` 只是容錯（真的有人把 usage 提到頂層時也讀得到），
-// 正確形狀是前者，兩者各有一個測試守著。
-function lastUsage(events) {
+// 底下的頂層 `?? event.usage` 只是容錯（真的有人把 usage 提到頂層時也讀得到）。
+//
+// **每則訊息的 usage 不是累計值，要自己加總。** 這是對真品查證出來的：pi 自己的
+// `getSessionStats()`（dist/core/agent-session.js:2364-2404）就是這樣做的 ——
+//     for (const message of state.messages)
+//       if (message.role === "assistant") { totalInput += assistantMsg.usage.input;
+//                                           totalOutput += assistantMsg.usage.output; … }
+// 如果 usage 本身就是整場累計，pi 不需要加總。舊版只取「最後一個有 usage 的事件」，
+// 於是多輪派工的 output 被嚴重低報（只算得到最後一則回覆），input 則變成
+// 「收工當下的 context 長度」而不是整場輸入量 —— 欄位名寫 tokens，值卻不是總量。
+//
+// 加總的對象是 **message_end**，不是 message_update：一則訊息串流期間會發很多個
+// message_update，每個都帶當下的 usage 快照，加起來會重複計數。message_end 一則
+// 訊息只發一次（agent-session.js:277 就是在 message_end 上把訊息
+// appendMessage 進 session，也就是 getSessionStats 加總的那份 state.messages）。
+function totalUsage(events) {
+  let input = 0;
+  let output = 0;
+  let seen = false;
+  for (const event of events) {
+    if (event?.type !== "message_end") continue;
+    if (event.message?.role !== "assistant") continue;
+    const usage = event.message?.usage ?? event.usage;
+    if (!usage) continue;
+    seen = true;
+    input += usage.input ?? 0;
+    output += usage.output ?? 0;
+  }
+  if (seen) return { input, output };
+
+  // 容錯：完全沒有帶 usage 的 message_end 時（只收到串流事件、或某個版本把 usage
+  // 提到事件頂層），退回「最後一個看得到的 usage」。這是 fallback，不是主要契約。
   for (let i = events.length - 1; i >= 0; i -= 1) {
     const usage = events[i]?.message?.usage ?? events[i]?.usage;
     if (usage) return { input: usage.input ?? 0, output: usage.output ?? 0 };
@@ -90,7 +119,7 @@ export const TERMINAL_SUCCESS_EVENTS = new Set(["agent_end", "agent_settled"]);
 //    union 與 rpc-mode.js:37 的 error() helper。
 //
 // ② assistant 訊息帶 `stopReason:"error"` + `errorMessage` —— **API 呼叫本身失敗**
-//    （omlx 沒開、model id 不存在、429/500…）。這是實測打出來的：用一個不存在的
+//    （推論伺服器沒開、model id 不存在、429/500…）。這是實測打出來的：用一個不存在的
 //    model id 實跑 `pi --mode rpc`，preflight 先回 `success:true`，接著吐一個
 //    content 為空、`stopReason:"error"`、
 //    `errorMessage:"404 Model '…' not found. Available models: …"` 的 assistant
@@ -125,7 +154,7 @@ export function isTerminalEvent(event) {
 function resolveStatus({ aborted, timedOut, failure, events }) {
   if (aborted) return "aborted";
   if (timedOut) return "timeout";
-  // pi 回報的終局失敗（omlx 掛了、model id 不存在…）比事件流裡任何東西都權威：
+  // pi 回報的終局失敗（推論伺服器掛了、model id 不存在…）比事件流裡任何東西都權威：
   // 這種情況下不會再有 agent_end，硬等只會等到 timeout。
   if (failure) return "failed";
   if (events.some(isTerminalEvent)) return "completed";
@@ -165,7 +194,7 @@ export function computeVerdict({
     files_read_unrequested: filesRead.filter((p) => !requested.has(p)),
     git_diff_stat: gitDiffStat,
     duration_s: durationS,
-    tokens: lastUsage(events),
+    tokens: totalUsage(events),
     session_id: sessionId,
     last_message: truncated ? raw.slice(0, LAST_MESSAGE_LIMIT) : raw,
     last_message_truncated: truncated,
