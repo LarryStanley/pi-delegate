@@ -164,7 +164,10 @@ export const TOOL_DEFINITIONS = [
     name: "pi_transcript",
     description:
       "Drill into pi's conversation. Only reach for this when the verdict is not enough. filter=text shows what it " +
-      "said, tools shows only tool calls, last_n shows the last n events.",
+      "said, tools shows only tool calls, last_n shows the last n events. Every reply is budgeted and file " +
+      "contents are elided down to their size, so this cannot dump what pi wrote back into your context — " +
+      "filter=tools is safe to reach for. When a reply says it was truncated, read the file from disk rather " +
+      "than pulling more transcript.",
     inputSchema: {
       type: "object",
       properties: {
