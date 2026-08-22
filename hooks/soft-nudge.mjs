@@ -41,8 +41,19 @@ const existedBefore = (p) => {
 
 if (!isProtectedPath(filePath, { cwd, exists: existedBefore })) process.exit(0);
 
+// Claude Code 的 hook JSON schema 只在 `hookSpecificOutput` 裡（而且必須配一個
+// `hookEventName`）接受 `additionalContext`；頂層的 `additionalContext` 會被
+// 當成「不認得的 key」蒐集起來丟掉，只在 debug log 留一句
+// `Hook JSON output had unrecognized keys (ignored): additionalContext.
+//  Did you mean hookSpecificOutput.additionalContext (with a hookEventName)?`
+// —— 該字串直接抓自 claude 2.1.239 binary，不是靠文件（公開文件把
+// additionalContext 畫在頂層，那是錯的，soft 模式整層失效就是這樣來的）。
+// soft 是 DEFAULT_MODE，包錯信封等於整個外掛的預設層級不作用。
 console.log(JSON.stringify({
-  additionalContext:
-    `提醒：你剛動了 ${filePath}，那是會被 commit 的產品碼 —— 判準是「這是會被 commit 的字元嗎」，` +
-    `是就該用 pi_dispatch 派給 pi。下一個同類的編輯請改成寫任務書。`,
+  hookSpecificOutput: {
+    hookEventName: "PostToolUse",
+    additionalContext:
+      `提醒：你剛動了 ${filePath}，那是會被 commit 的產品碼 —— 判準是「這是會被 commit 的字元嗎」，` +
+      `是就該用 pi_dispatch 派給 pi。下一個同類的編輯請改成寫任務書。`,
+  },
 }));

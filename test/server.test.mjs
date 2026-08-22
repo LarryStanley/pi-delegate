@@ -167,15 +167,46 @@ async function dispatchAndGetSessionId(handlers, task, mode = "async") {
   return started.content[0].text.match(/session_id:\s*(\S+)/)[1];
 }
 
-test("pi_status 回傳已完成派工的狀態", async () => {
+// [I8] 欄位名對齊 spec §5：{status, elapsed_s, current_tool, files_touched}
+test("pi_status 對已完成的派工回傳 spec §5 的四個欄位", async () => {
   const task = tmpFile("TASK.md");
   writeFileSync(task, "改 a.ts");
   const { handlers } = setup(fakeDispatch());
   const sessionId = await dispatchAndGetSessionId(handlers, task, "sync");
   const status = await handlers.pi_status({ session_id: sessionId });
   const parsed = JSON.parse(status.content[0].text);
+  assert.deepEqual(Object.keys(parsed).sort(), ["current_tool", "elapsed_s", "files_touched", "status"]);
   assert.equal(parsed.status, "completed");
-  assert.equal(parsed.done, true);
+  assert.equal(parsed.elapsed_s, 3);
+  assert.equal(parsed.current_tool, null);
+  assert.deepEqual(parsed.files_touched, ["a.ts"]);
+});
+
+test("pi_status 對還在跑的派工回傳 running / 進行中的工具 / 已經寫過的檔", async () => {
+  const task = tmpFile("TASK.md");
+  writeFileSync(task, "改 a.ts");
+  const events = [
+    { type: "tool_execution_start", toolCallId: "t1", toolName: "write", args: { path: "a.ts" } },
+    { type: "tool_execution_end", toolCallId: "t1", toolName: "write", result: {}, isError: false },
+    { type: "tool_execution_start", toolCallId: "t2", toolName: "edit", args: { path: "b.ts" } },
+  ];
+  const dispatchFn = async ({ sessionId }) => ({
+    handle: {
+      sessionId, steer() {}, async abort() {},
+      state: () => ({ running: true, elapsed_s: 7 }),
+      events,
+    },
+    done: new Promise(() => {}), // 永不 settle：還在跑
+  });
+  const { handlers } = setup(dispatchFn);
+  const sessionId = await dispatchAndGetSessionId(handlers, task);
+  const parsed = JSON.parse((await handlers.pi_status({ session_id: sessionId })).content[0].text);
+  assert.deepEqual(parsed, {
+    status: "running",
+    elapsed_s: 7,
+    current_tool: "edit",
+    files_touched: ["a.ts", "b.ts"],
+  });
 });
 
 test("pi_status 對未知 session_id 回錯誤並列出有效 id", async () => {
@@ -335,4 +366,105 @@ test("pi_stats 對未知 session_id 回錯誤", async () => {
   assert.equal(result.isError, true);
   assert.match(result.content[0].text, /ghost/);
   assert.ok(result.content[0].text.includes(knownId), "應列出有效的 session id");
+});
+
+// --- [I1] git_diff_stat 的求值時機 ---
+
+test("git_diff_stat 在派工結束時才求值，不是在派工之前", async () => {
+  const task = tmpFile("TASK.md");
+  writeFileSync(task, "改 a.ts");
+
+  let tree = "(乾淨的工作樹)";
+  let calls = 0;
+  let callsWhenDispatchStarted = null;
+
+  const gitDiffStatFn = () => {
+    calls += 1;
+    return tree;
+  };
+
+  const dispatchFn = async ({ sessionId, gitDiffStat }) => {
+    callsWhenDispatchStarted = calls;
+    return {
+      handle: { sessionId, steer() {}, async abort() {}, state: () => ({ running: false }) },
+      done: (async () => {
+        // pi 在這段期間動了工作樹
+        tree = "1 file changed, 3 insertions(+)";
+        return {
+          ...okVerdict,
+          session_id: sessionId,
+          git_diff_stat: typeof gitDiffStat === "function" ? gitDiffStat() : gitDiffStat,
+        };
+      })(),
+    };
+  };
+
+  const handlers = createToolHandlers({
+    registry: createRegistry(),
+    dispatchFn,
+    eventsLogPath: tmpFile("events.log"),
+    gitDiffStatFn,
+  });
+
+  const result = await handlers.pi_dispatch({ task_file: task, cwd: "/tmp", mode: "sync" });
+
+  assert.equal(callsWhenDispatchStarted, 0, "派工開始前不該已經量過 git diff");
+  assert.match(result.content[0].text, /git_diff_stat:\s+1 file changed, 3 insertions\(\+\)/);
+});
+
+// --- [I7] 逐字稿與判決共用同一支 assistant 文字解析器 ---
+
+test("pi_transcript filter=text 也吃字串型 content（不再從逐字稿消失）", async () => {
+  const task = tmpFile("TASK.md");
+  writeFileSync(task, "改 a.ts");
+  const events = [
+    { type: "message_end", message: { role: "assistant", content: "字串型回答" } },
+    { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "陣列型回答" }] } },
+    { type: "message_end", message: { role: "user", content: "使用者說的不算" } },
+  ];
+  const { handlers } = setup(fakeDispatchWithEvents(events));
+  const sessionId = await dispatchAndGetSessionId(handlers, task);
+  const result = await handlers.pi_transcript({ session_id: sessionId, filter: "text" });
+  assert.equal(result.content[0].text, "字串型回答\n---\n陣列型回答");
+});
+
+// --- [I7] 未知 session_id 的錯誤訊息只有一份 ---
+
+test("pi_result 與 pi_status 對未知 session_id 給出同一句錯誤", async () => {
+  const task = tmpFile("TASK.md");
+  writeFileSync(task, "改 a.ts");
+  const { handlers } = setup(fakeDispatch());
+  await dispatchAndGetSessionId(handlers, task, "sync");
+  const fromResult = await handlers.pi_result({ session_id: "ghost" });
+  const fromStatus = await handlers.pi_status({ session_id: "ghost" });
+  assert.equal(fromResult.isError, true);
+  assert.equal(fromResult.content[0].text, fromStatus.content[0].text);
+  assert.match(fromResult.content[0].text, /目前有效的：/);
+});
+
+// --- registry.add 要在 spawn 之前，否則撞號會留下孤兒 pi 行程 ---
+
+test("session_id 撞號時不會先 spawn 子行程", async () => {
+  const task = tmpFile("TASK.md");
+  writeFileSync(task, "改 a.ts");
+  let spawned = 0;
+  const registry = createRegistry();
+  const handlers = createToolHandlers({
+    registry: {
+      ...registry,
+      add() { throw new Error('session_id "x" 已存在'); },
+    },
+    dispatchFn: async (...a) => {
+      spawned += 1;
+      return fakeDispatch()(...a);
+    },
+    eventsLogPath: tmpFile("events.log"),
+    gitDiffStatFn: () => "",
+  });
+
+  await assert.rejects(
+    () => handlers.pi_dispatch({ task_file: task, cwd: "/tmp", mode: "sync" }),
+    /已存在/,
+  );
+  assert.equal(spawned, 0, "registry.add 失敗時不該已經 spawn 出 pi 子行程");
 });

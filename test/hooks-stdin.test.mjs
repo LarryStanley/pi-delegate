@@ -18,6 +18,7 @@ import { setMode } from "../src/modes.mjs";
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const MODE_GUARD = join(REPO_ROOT, "hooks", "mode-guard.mjs");
 const SOFT_NUDGE = join(REPO_ROOT, "hooks", "soft-nudge.mjs");
+const DOCTOR_CHECK = join(REPO_ROOT, "hooks", "doctor-check.mjs");
 
 function tmpProject() {
   // macOS 的 tmpdir() 在 /var/folders/... 底下，而 /var 是 /private/var 的 symlink ——
@@ -122,8 +123,16 @@ test("soft-nudge: 既有（git 已 track）的 src/*.ts 會提醒", () => {
   const result = runHook(SOFT_NUDGE, { cwd: project, home, stdin: payload });
 
   assert.equal(result.status, 0);
-  assert.match(result.stdout, /"additionalContext"/);
-  assert.match(result.stdout, /existing\.ts/);
+  // 只 match /"additionalContext"/ 是不夠的 —— 壞掉的頂層信封同樣會 match（這正是
+  // C1 能一路綠燈到最後一次 review 的原因）。這裡改成解析出結構、指名
+  // hookSpecificOutput.hookEventName，讓「退回頂層」這件事一定紅。
+  // 契約來源是 claude 2.1.239 binary 裡的 zod schema，不是公開文件（文件把
+  // additionalContext 畫在頂層，是錯的）；查證過程見 final-fix-report.md。
+  const payloadOut = JSON.parse(result.stdout);
+  assert.equal(payloadOut.additionalContext, undefined, "additionalContext 不能放在頂層");
+  assert.equal(payloadOut.hookSpecificOutput.hookEventName, "PostToolUse");
+  assert.equal(typeof payloadOut.hookSpecificOutput.additionalContext, "string");
+  assert.match(payloadOut.hookSpecificOutput.additionalContext, /existing\.ts/);
 });
 
 test("soft-nudge: 不是 git repo 時對既有檔案也放行（漏提醒比濫提醒安全）", () => {
@@ -150,4 +159,47 @@ test("soft-nudge: 壞掉的 stdin JSON 靜默退出", () => {
 
   assert.equal(result.status, 0);
   assert.equal(result.stdout.trim(), "");
+});
+
+// ---- [C2] doctor-check 的 SessionStart 信封 ----
+
+function runDoctorCheck({ cwd, home }) {
+  return spawnSync(process.execPath, [DOCTOR_CHECK], {
+    cwd,
+    env: { ...process.env, HOME: home },
+    input: "",
+    encoding: "utf8",
+  });
+}
+
+test("doctor-check: 模式公告與問題清單包在 hookSpecificOutput/SessionStart 裡", () => {
+  const project = tmpProject();
+  const home = tmpHome();
+  setMode(project, "strict", stateFileFor(home));
+
+  const result = runDoctorCheck({ cwd: project, home });
+
+  assert.equal(result.status, 0);
+  const out = JSON.parse(result.stdout);
+  assert.equal(out.additionalContext, undefined, "additionalContext 不能放在頂層");
+  assert.equal(out.hookSpecificOutput.hookEventName, "SessionStart");
+  assert.match(out.hookSpecificOutput.additionalContext, /pi-delegate 模式：strict/);
+  // 這個 tmp HOME 底下沒有 ~/.pi/agent/models.json，所以一定會有 provider-missing
+  assert.match(out.hookSpecificOutput.additionalContext, /provider-missing/);
+});
+
+test("doctor-check: models.json 壞掉時降級成警告，不是讓 hook 掛掉", () => {
+  const project = tmpProject();
+  const home = tmpHome();
+  setMode(project, "soft", stateFileFor(home));
+  mkdirSync(join(home, ".pi", "agent"), { recursive: true });
+  writeFileSync(join(home, ".pi", "agent", "models.json"), "{ 這不是合法 JSON");
+
+  const result = runDoctorCheck({ cwd: project, home });
+
+  assert.equal(result.status, 0, `hook 不該非零退出：${result.stderr}`);
+  const out = JSON.parse(result.stdout);
+  assert.equal(out.hookSpecificOutput.hookEventName, "SessionStart");
+  assert.match(out.hookSpecificOutput.additionalContext, /不是合法 JSON/);
+  assert.match(out.hookSpecificOutput.additionalContext, /pi-delegate 模式：soft/);
 });

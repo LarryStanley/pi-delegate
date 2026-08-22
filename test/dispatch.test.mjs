@@ -4,6 +4,7 @@ import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildPiArgs, dispatch } from "../src/dispatch.mjs";
+import { formatVerdict } from "../src/verdict.mjs";
 
 // NOTE (deviation from task-6-brief.md): the brief places this fixture at
 // test/fixtures/fake-pi.mjs. Node's `node --test` (bare, per package.json)
@@ -189,4 +190,133 @@ test("子行程忽略 SIGTERM 時，逾時仍靠 SIGKILL escalation 結束並回
   });
   const verdict = await done;
   assert.equal(verdict.status, "timeout");
+});
+
+// --- [I1] gitDiffStat 的求值時機 ---
+
+test("gitDiffStat 是 thunk 時，在 settle 當下才求值（不是 spawn 當下）", async () => {
+  const { dir, file } = tmpTask();
+  let stat = "spawn 當下（乾淨的工作樹）";
+  const { done } = await dispatch({
+    taskFile: file, cwd: dir, model: "M", timeoutS: 1,
+    sessionId: "g1", piCommand: [...FAKE_PI, "--hang"],
+    gitDiffStat: () => stat,
+  });
+  // dispatch() 已經回來、pi 還在跑 —— 這時候工作樹才被動到
+  stat = "1 file changed, 3 insertions(+)";
+  const verdict = await done;
+  assert.equal(verdict.status, "timeout");
+  assert.equal(
+    verdict.git_diff_stat,
+    "1 file changed, 3 insertions(+)",
+    "逾時判決要反映 pi 實際寫了什麼，不是派工前的快照",
+  );
+});
+
+test("gitDiffStat 傳字串時照舊原樣帶進判決", async () => {
+  const { dir, file } = tmpTask();
+  const { done } = await dispatch({
+    taskFile: file, cwd: dir, model: "M", timeoutS: 10,
+    sessionId: "g2", piCommand: FAKE_PI, gitDiffStat: "2 files changed",
+  });
+  assert.equal((await done).git_diff_stat, "2 files changed");
+});
+
+// --- [I2] pi 回報終局失敗時要立刻收尾，不要拖滿 timeout ---
+
+test("response success:false（omlx 掛了）立刻判 failed 並附上錯誤字串", async () => {
+  const { dir, file } = tmpTask();
+  const timeoutS = 20;
+  const startedAt = Date.now();
+  const { done } = await dispatch({
+    taskFile: file, cwd: dir, model: "M", timeoutS,
+    sessionId: "f1", piCommand: [...FAKE_PI, "--api-error"], gitDiffStat: "",
+  });
+  const verdict = await done;
+  const elapsedS = (Date.now() - startedAt) / 1000;
+  assert.equal(verdict.status, "failed");
+  assert.match(verdict.failure, /ECONNREFUSED/);
+  assert.ok(
+    elapsedS < timeoutS / 4,
+    `應該秒級收尾而不是等滿 ${timeoutS}s timeout，實測 ${elapsedS}s`,
+  );
+});
+
+// --- [I3] spec §11：spawn 失敗要 status: failed 附 stderr ---
+
+test("pi 不在 PATH 上時，判決是 failed 而且帶得出 stderr 線索", async () => {
+  const { dir, file } = tmpTask();
+  const { done } = await dispatch({
+    taskFile: file, cwd: dir, model: "M", timeoutS: 10,
+    sessionId: "e1", piCommand: ["pi-definitely-not-on-path"], gitDiffStat: "",
+  });
+  const verdict = await done;
+  assert.equal(verdict.status, "failed");
+  assert.match(verdict.stderr, /ENOENT/);
+  assert.match(formatVerdict(verdict), /stderr:/);
+  assert.match(formatVerdict(verdict), /ENOENT/);
+});
+
+// --- [I6] settled 互斥閘門在 timeout 路徑上也要生效 ---
+
+test("終局事件比 timeout 晚到時，不會再送第二次 SIGTERM", async () => {
+  const { dir, file } = tmpTask();
+  const logDir = mkdtempSync(join(tmpdir(), "pi-sigterm-late-"));
+  const sigtermLog = join(logDir, "sigterm.log");
+
+  // timeout 在 1s 觸發（SIGTERM #1，被子行程吃掉），agent_end 在 1.5s 才到。
+  // 沒有閘門的話那個遲到的事件會呼叫 killWithEscalation() → SIGTERM #2。
+  const { done } = await dispatch({
+    taskFile: file, cwd: dir, model: "M", timeoutS: 1,
+    sessionId: "t1",
+    piCommand: [...FAKE_PI, "--ignore-sigterm", "--late-agent-end=1500", `--sigterm-log=${sigtermLog}`],
+    gitDiffStat: "",
+  });
+
+  const verdict = await done;
+  assert.equal(verdict.status, "timeout");
+
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+
+  const received = readFileSync(sigtermLog, "utf8").trim().split("\n").filter(Boolean);
+  assert.equal(
+    received.length,
+    1,
+    `expected exactly 1 SIGTERM (timeout 路徑也該翻 settled)，got ${received.length}`,
+  );
+});
+
+// --- [C3] 替身與實作對同一個真實形狀（fixture 也已改成 message.usage） ---
+
+test("判決的 tokens 由事件流裡的 message.usage 算出，不是 0/0", async () => {
+  const { dir, file } = tmpTask();
+  const { done } = await dispatch({
+    taskFile: file, cwd: dir, model: "M", timeoutS: 10,
+    sessionId: "u1", piCommand: FAKE_PI, gitDiffStat: "",
+  });
+  assert.deepEqual((await done).tokens, { input: 10, output: 5 });
+});
+
+// --- [I2, 修正版] 真實形狀的 API 失敗要秒級收尾並判 failed ---
+
+test("model id 打錯（stopReason=error）判 failed 而不是 0 秒的假 completed", async () => {
+  const { dir, file } = tmpTask();
+  const { done } = await dispatch({
+    taskFile: file, cwd: dir, model: "M", timeoutS: 20,
+    sessionId: "m1", piCommand: [...FAKE_PI, "--model-error"], gitDiffStat: "",
+  });
+  const verdict = await done;
+  assert.equal(verdict.status, "failed");
+  assert.match(verdict.failure, /404 Model 'nope' not found/);
+});
+
+test("agent_end 帶 willRetry:true 時不收尾，等 pi 重試完的那個終局事件", async () => {
+  const { dir, file } = tmpTask();
+  const { done } = await dispatch({
+    taskFile: file, cwd: dir, model: "M", timeoutS: 20,
+    sessionId: "r1", piCommand: [...FAKE_PI, "--retry-then-end"], gitDiffStat: "",
+  });
+  const verdict = await done;
+  assert.equal(verdict.status, "completed");
+  assert.equal(verdict.last_message, "重試之後成功了");
 });

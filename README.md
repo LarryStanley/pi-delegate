@@ -20,6 +20,15 @@ claude --plugin-dir /path/to/pi-delegate
 
 用 `/pi-delegate:mode <模式>` 切換，狀態存在 `~/.claude/pi-delegate/modes.json`，按專案記憶。
 
+`strict` 是紀律護欄，不是強制執行：hook 只掛在 `Write|Edit` 上，用 `Bash`
+（`sed -i`、heredoc、`python - <<EOF`…）改同一個檔案完全不會被攔。要繞永遠繞得過去，
+它擋的是「順手就自己改了」，不是有意的規避。
+
+## 已知未實作
+
+`pi_stats` 只回判決裡已有的 `tokens` 與 `duration_s`。spec §5 寫的
+`get_session_stats` 原樣轉發（含 `cost` / `context` 用量）尚未實作 —— 這兩個數字目前不會回報。
+
 ## 設計文件
 
 - Spec：`docs/superpowers/specs/2026-08-22-pi-delegate-plugin-design.md`

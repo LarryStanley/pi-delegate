@@ -2,13 +2,13 @@ import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, resolve as resolvePath } from "node:path";
 import { createJsonlSplitter } from "./jsonl.mjs";
-import { computeVerdict, TERMINAL_SUCCESS_EVENTS } from "./verdict.mjs";
+import { computeVerdict, isTerminalEvent } from "./verdict.mjs";
 
 export const DEFAULT_MODEL = "Qwen3.8-27B-oQ4e-mtp";
 export const DEFAULT_TIMEOUT_S = 1500;
 const KILL_GRACE_MS = 2000;
 
-// 判定「終局事件」用同一份 verdict.mjs 的 TERMINAL_SUCCESS_EVENTS ——
+// 判定「終局事件」用同一份 verdict.mjs 的 isTerminalEvent() ——
 // dispatch 要不要收尾子行程、verdict 要不要判 completed，看的必須是同一組
 // 事件名稱，否則兩邊一邊認一邊不認，就會重新出現本輪要修的那個 bug
 // class（settle 訊號跟判決訊號對不上）。
@@ -67,6 +67,9 @@ export async function dispatch({
   const startedAt = Date.now();
   let aborted = false;
   let timedOut = false;
+  // pi 自己回報的終局失敗（omlx 掛了、model id 不存在…）。見下方 stdout handler。
+  let failure = null;
+  let stderr = "";
   // `child.killed` only reflects whether kill() successfully *sent* a signal,
   // not whether the process actually died — it flips true the instant
   // SIGTERM is sent, so `child.killed || child.kill("SIGKILL")` always
@@ -103,22 +106,40 @@ export async function dispatch({
   // 一致）。所以判決要在「事件流裡看到終局事件」的當下就定案，然後才去收
   // 尾子行程 —— 不要「簡化」回等 close，那就是在重新引入這個 bug。
   let settled = false;
-  function settleFromTerminalEvent() {
+
+  // git_diff_stat 必須在**判決定案的當下**才求值，不是在 spawn 之前。
+  // 之前 server.mjs 是在派工前就算好一個字串傳進來，於是在乾淨的工作樹上
+  // 無論 pi 寫了什麼，判決永遠是 `(none)` —— 剛好廢掉 spec §7/§11 引進這個
+  // 欄位的唯一理由（「逾時 ≠ 什麼都沒做」）。這裡同時接受字串（測試、
+  // 或呼叫端真的想釘死一個值）與 thunk（正式路徑）。
+  function resolveGitDiffStat() {
+    try {
+      return typeof gitDiffStat === "function" ? gitDiffStat() : gitDiffStat;
+    } catch {
+      return "";
+    }
+  }
+
+  function makeVerdict(exitCode = null) {
+    return computeVerdict({
+      events,
+      aborted,
+      timedOut,
+      failure,
+      stderr,
+      exitCode,
+      requestedFiles: extractRequestedFiles(taskFile),
+      gitDiffStat: resolveGitDiffStat(),
+      durationS: Math.round((Date.now() - startedAt) / 1000),
+      sessionId,
+    });
+  }
+
+  function settleNow() {
     if (settled) return;
     settled = true;
     clearTimeout(timer);
-    settledResolve(
-      computeVerdict({
-        events,
-        aborted,
-        timedOut,
-        exitCode: null,
-        requestedFiles: extractRequestedFiles(taskFile),
-        gitDiffStat,
-        durationS: Math.round((Date.now() - startedAt) / 1000),
-        sessionId,
-      }),
-    );
+    settledResolve(makeVerdict());
     // 判決已經定案，子行程沒有繼續活著的理由了 —— 用既有的
     // killWithEscalation（不能繞過去：child.killed 不可靠，見上面關於
     // "exit" 事件的說明），SIGTERM 先禮貌一次，逾期再 SIGKILL。
@@ -137,11 +158,28 @@ export async function dispatch({
         continue;
       }
       events.push(event);
-      if (TERMINAL_SUCCESS_EVENTS.has(event?.type)) settleFromTerminalEvent();
+      if (isTerminalEvent(event)) {
+        settleNow();
+        continue;
+      }
+      // pi 的 rpc mode 對失敗的指令會吐
+      //   { id?, type:"response", command, success:false, error:string }
+      // （dist/modes/rpc/rpc-types.d.ts 的 RpcResponse union 最後一支；
+      //  rpc-mode.js:37 的 error() helper）然後**繼續活著等下一個指令** ——
+      // rpc mode 是刻意常駐的，所以沒人收尾就會一路空等到 timeout。
+      //
+      // 注意：**API 呼叫失敗（omlx 沒開、model id 打錯）不走這條**。實測過：
+      // prompt 的 preflight 會先回 success:true，錯誤是掛在 assistant 訊息的
+      // `stopReason:"error"` / `errorMessage` 上，然後照常發 agent_end
+      // （見 verdict.mjs 的 terminalErrorMessage()）。這條涵蓋的是 preflight
+      // 就沒過、指令解析失敗那一類。兩條都要有，缺一邊就會漏一整類失敗。
+      if (event?.type === "response" && event.success === false) {
+        failure = String(event.error ?? `${event.command} 失敗`);
+        settleNow();
+      }
     }
   });
 
-  let stderr = "";
   child.stderr.setEncoding("utf8");
   child.stderr.on("data", (chunk) => {
     stderr += chunk;
@@ -149,6 +187,11 @@ export async function dispatch({
 
   const timer = setTimeout(() => {
     timedOut = true;
+    // 逾時也要翻 `settled`：否則一個在逾時之後才抵達的終局事件仍會跑完整條
+    // settle 路徑 —— 第二次 SIGTERM、graceTimer 被覆蓋、第一個計時器變孤兒。
+    // 判決本身仍由 close handler 產生（此時 timedOut 已是 true，resolveStatus
+    // 會判 timeout），這裡只是把互斥閘門補齊。
+    settled = true;
     killWithEscalation();
   }, timeoutS * 1000);
 
@@ -167,32 +210,20 @@ export async function dispatch({
   child.on("close", (exitCode) => {
     clearTimeout(timer);
     if (graceTimer) clearTimeout(graceTimer);
-    settledResolve(
-      computeVerdict({
-        events,
-        aborted,
-        timedOut,
-        exitCode,
-        requestedFiles: extractRequestedFiles(taskFile),
-        gitDiffStat,
-        durationS: Math.round((Date.now() - startedAt) / 1000),
-        sessionId,
-      }),
-    );
+    // 這裡刻意不看 `settled`：終局事件那條路已經 resolve 過的話，Promise 的
+    // resolve 本來就是冪等的；但逾時那條路是**只**翻 settled、判決留給這裡產生。
+    settledResolve(makeVerdict(exitCode));
   });
 
   child.on("error", (error) => {
     clearTimeout(timer);
     if (graceTimer) clearTimeout(graceTimer);
-    stderr += String(error);
-    settledResolve(
-      computeVerdict({
-        events, aborted, timedOut: false, exitCode: null,
-        requestedFiles: extractRequestedFiles(taskFile), gitDiffStat,
-        durationS: Math.round((Date.now() - startedAt) / 1000),
-        sessionId,
-      }),
-    );
+    settled = true;
+    // spec §11：「pi 子行程 spawn 失敗 → status: failed，附 stderr」。
+    // 這串（例如 `Error: spawn pi ENOENT`）以前只進得了 handle.state()，
+    // 判決本身完全不提，於是 pi 不在 PATH 上時只會拿到一個沒有線索的 failed。
+    stderr += `${error}\n`;
+    settledResolve(makeVerdict());
   });
 
   const handle = {
@@ -203,7 +234,7 @@ export async function dispatch({
     async abort() {
       aborted = true;
       send({ type: "abort" });
-      // 跟 settleFromTerminalEvent 共用同一個 `settled` 旗標：一個終局事件
+      // 跟 settleNow() 共用同一個 `settled` 旗標：一個終局事件
       // 有可能在 abort() 設完 aborted 之後、才被 stdout handler 讀到，兩條
       // 路徑若都各自呼叫 killWithEscalation()，就是兩次 SIGTERM 疊加、
       // 第一個 graceTimer 被第二個蓋掉變成孤兒計時器。只讓先到的那條路徑

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { computeVerdict, formatVerdict, LAST_MESSAGE_LIMIT } from "../src/verdict.mjs";
+import { computeVerdict, formatVerdict, assistantText, LAST_MESSAGE_LIMIT } from "../src/verdict.mjs";
 
 const BASE = {
   events: [],
@@ -102,7 +102,31 @@ test("取的是最後一則 assistant 訊息，不是第一則", () => {
   assert.equal(v.last_message, "last");
 });
 
-test("token 用量取最後一個 message_update 的累計值", () => {
+// [C3] 真實形狀：usage 是 AssistantMessage 的欄位（pi-ai types.d.ts），
+// 事件本身沒有頂層 usage（pi-agent-core 的 AgentEvent union）。這個測試若紅，
+// 代表判決又回去讀事件頂層了 —— 真實派工會永遠回報 in 0 / out 0。
+function updateWithUsage(input, output) {
+  return {
+    type: "message_update",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "…" }],
+      usage: { input, output, cacheRead: 0, cacheWrite: 0, totalTokens: input + output },
+      stopReason: "stop",
+    },
+    assistantMessageEvent: { type: "text_delta" },
+  };
+}
+
+test("token 用量取最後一個事件的 message.usage（真實 pi 形狀）", () => {
+  const events = [updateWithUsage(10, 1), updateWithUsage(100, 42), ended];
+  const v = computeVerdict({ ...BASE, events });
+  assert.deepEqual(v.tokens, { input: 100, output: 42 });
+});
+
+// 容錯分支：萬一某個版本真的把 usage 提到事件頂層也要讀得到。這是 fallback，
+// 不是主要契約 —— 上面那個測試才是。
+test("token 用量在事件頂層帶 usage 時也讀得到（容錯 fallback）", () => {
   const events = [
     { type: "message_update", usage: { input: 10, output: 1 } },
     { type: "message_update", usage: { input: 100, output: 42 } },
@@ -110,6 +134,10 @@ test("token 用量取最後一個 message_update 的累計值", () => {
   ];
   const v = computeVerdict({ ...BASE, events });
   assert.deepEqual(v.tokens, { input: 100, output: 42 });
+});
+
+test("沒有任何 usage 時退回 0/0", () => {
+  assert.deepEqual(computeVerdict({ ...BASE, events: [ended] }).tokens, { input: 0, output: 0 });
 });
 
 test("逾時仍附上 git_diff_stat（逾時不等於沒做事）", () => {
@@ -125,4 +153,103 @@ test("formatVerdict 輸出不超過 20 行且含所有欄位", () => {
   for (const key of ["status", "write_count", "session_id", "last_message"]) {
     assert.ok(text.includes(key), `缺欄位 ${key}`);
   }
+});
+
+// --- [I2] pi 回報的終局失敗 ---
+
+test("failure 非空時就是 failed，即使事件流裡沒有任何終局事件", () => {
+  const v = computeVerdict({ ...BASE, failure: "omlx: connect ECONNREFUSED" });
+  assert.equal(v.status, "failed");
+  assert.equal(v.failure, "omlx: connect ECONNREFUSED");
+});
+
+test("aborted / timedOut 仍優先於 failure", () => {
+  assert.equal(computeVerdict({ ...BASE, failure: "x", timedOut: true }).status, "timeout");
+  assert.equal(computeVerdict({ ...BASE, failure: "x", aborted: true }).status, "aborted");
+});
+
+test("formatVerdict 在有 failure 時多印一行", () => {
+  const text = formatVerdict(computeVerdict({ ...BASE, failure: "model not found" }));
+  assert.match(text, /failure:\s+model not found/);
+});
+
+// --- [I3] spec §11：spawn 失敗要「附 stderr」 ---
+
+test("stderr 進得了判決，也印得出來", () => {
+  const v = computeVerdict({ ...BASE, stderr: "spawn pi ENOENT\n" });
+  assert.equal(v.stderr, "spawn pi ENOENT\n");
+  assert.match(formatVerdict(v), /stderr:\n {2}spawn pi ENOENT/);
+});
+
+test("stderr 為空時 formatVerdict 不印那一段", () => {
+  assert.ok(!formatVerdict(computeVerdict({ ...BASE, events: [ended] })).includes("stderr:"));
+});
+
+test("formatVerdict 只印 stderr 尾巴，不讓長 traceback 撐爆判決", () => {
+  const noisy = Array.from({ length: 40 }, (_, i) => `line ${i}`).join("\n");
+  const text = formatVerdict(computeVerdict({ ...BASE, stderr: noisy }));
+  assert.ok(text.includes("line 39"), "要留最後一行");
+  assert.ok(!text.includes("line 30"), "不該印到 30 行以前");
+});
+
+// --- [I7] 判決與逐字稿共用同一支 assistant 文字解析器 ---
+
+test("assistantText 同時吃字串型與陣列型 content", () => {
+  assert.equal(assistantText({ role: "assistant", content: "純字串" }), "純字串");
+  assert.equal(
+    assistantText({ role: "assistant", content: [{ type: "text", text: "a" }, { type: "thinking", thinking: "x" }, { type: "text", text: "b" }] }),
+    "ab",
+  );
+  assert.equal(assistantText({ role: "user", content: "不是 assistant" }), "");
+  assert.equal(assistantText(undefined), "");
+});
+
+test("字串型 content 的 message_end 也能成為 last_message", () => {
+  const events = [{ type: "message_end", message: { role: "assistant", content: "字串型回答" } }, ended];
+  assert.equal(computeVerdict({ ...BASE, events }).last_message, "字串型回答");
+});
+
+// --- [I2, 修正版] 真實 pi 的 API 失敗形狀：assistant 訊息帶 stopReason:"error" ---
+// 實測（打錯 model id 的 pi 0.80.2）：preflight 回 success:true，錯誤是掛在
+// assistant 訊息上的，後面照常有 agent_end。只認 response success:false 的話
+// 這裡會回 completed —— 0 秒的假綠燈，比逾時更難發現。
+
+function failedAssistantMessage(errorMessage) {
+  return {
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [],
+      usage: { input: 0, output: 0 },
+      stopReason: "error",
+      errorMessage,
+    },
+  };
+}
+
+test("assistant 訊息 stopReason=error 時判 failed，即使後面有 agent_end", () => {
+  const v = computeVerdict({
+    ...BASE,
+    events: [failedAssistantMessage("404 Model 'nope' not found."), { type: "agent_end", willRetry: false }],
+  });
+  assert.equal(v.status, "failed");
+  assert.match(v.failure, /404 Model 'nope' not found\./);
+});
+
+test("先失敗後成功（重試成功）的事件流仍判 completed", () => {
+  const v = computeVerdict({
+    ...BASE,
+    events: [
+      failedAssistantMessage("429 rate limited"),
+      { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "好了" }], stopReason: "stop" } },
+      ended,
+    ],
+  });
+  assert.equal(v.status, "completed");
+  assert.equal(v.failure, null);
+});
+
+test("agent_end 帶 willRetry:true 不算終局（pi 還會自己重試一輪）", () => {
+  const v = computeVerdict({ ...BASE, events: [{ type: "agent_end", willRetry: true }] });
+  assert.notEqual(v.status, "completed");
 });

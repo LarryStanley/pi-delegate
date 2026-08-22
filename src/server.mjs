@@ -5,7 +5,7 @@ import { join, dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { dispatch as realDispatch, DEFAULT_MODEL, DEFAULT_TIMEOUT_S } from "./dispatch.mjs";
 import { createRegistry } from "./registry.mjs";
-import { formatVerdict } from "./verdict.mjs";
+import { formatVerdict, assistantText, writtenPaths } from "./verdict.mjs";
 import { DRAFTER_MODELS } from "./doctor.mjs";
 
 export function eventsLogPath() {
@@ -20,6 +20,18 @@ export function realGitDiffStat(cwd) {
   } catch {
     return "";
   }
+}
+
+// spec §5 的 pi_status 要回 current_tool。pi 一次 tool call 會發
+// start → update* → end，所以「現在正在做什麼」＝ 有 start 但還沒 end 的那個。
+function currentTool(events) {
+  const open = new Map();
+  for (const event of events) {
+    if (event?.type === "tool_execution_start") open.set(event.toolCallId, event.toolName);
+    else if (event?.type === "tool_execution_end") open.delete(event.toolCallId);
+  }
+  const names = [...open.values()];
+  return names.length ? names[names.length - 1] : null;
 }
 
 export const TOOL_DEFINITIONS = [
@@ -130,11 +142,27 @@ export function createToolHandlers({
       }
 
       const sessionId = randomUUID().slice(0, 8);
-      const { handle, done } = await dispatchFn({
-        taskFile: task_file, cwd, model, timeoutS: timeout_s,
-        sessionId, gitDiffStat: gitDiffStatFn(cwd),
-      });
-      registry.add(sessionId, { handle, done, verdict: null, cwd, taskFile: task_file, model });
+      // 先佔位再 spawn。反過來的話（舊版）`registry.add` 若拋錯（session_id 撞號）
+      // 會在子行程已經起來之後才炸，留下一個沒人管得到、pi_abort 也叫不到的孤兒
+      // pi 行程。佔位到 spawn 之間沒有 await，其他 tool 進不來。
+      registry.add(sessionId, { handle: null, done: null, verdict: null, cwd, taskFile: task_file, model });
+
+      let handle;
+      let done;
+      try {
+        ({ handle, done } = await dispatchFn({
+          taskFile: task_file, cwd, model, timeoutS: timeout_s,
+          sessionId,
+          // thunk，不是先算好的字串：git diff 必須在 pi 跑完之後才量，否則乾淨
+          // 工作樹上永遠回報 (none)，spec §7/§11 的「逾時 ≠ 什麼都沒做」就廢了。
+          gitDiffStat: () => gitDiffStatFn(cwd),
+        }));
+      } catch (error) {
+        const verdict = failedVerdict(sessionId, error);
+        registry.update(sessionId, { verdict });
+        return text(formatVerdict(verdict), true);
+      }
+      registry.update(sessionId, { handle, done });
 
       done
         .then((verdict) => {
@@ -153,10 +181,26 @@ export function createToolHandlers({
       return text(formatVerdict(await done));
     },
 
+    // 欄位對齊 spec §5：{status, elapsed_s, current_tool, files_touched}。
     async pi_status({ session_id }) {
-      return withSession(session_id, (entry) =>
-        text(JSON.stringify(entry.verdict ? { status: entry.verdict.status, done: true } : entry.handle.state(), null, 2)),
-      );
+      return withSession(session_id, (entry) => {
+        if (entry.verdict) {
+          return text(JSON.stringify({
+            status: entry.verdict.status,
+            elapsed_s: entry.verdict.duration_s,
+            current_tool: null,
+            files_touched: entry.verdict.files_written,
+          }, null, 2));
+        }
+        const events = entry.handle?.events ?? [];
+        const state = entry.handle?.state?.() ?? {};
+        return text(JSON.stringify({
+          status: "running",
+          elapsed_s: state.elapsed_s ?? 0,
+          current_tool: currentTool(events),
+          files_touched: writtenPaths(events),
+        }, null, 2));
+      });
     },
 
     async pi_steer({ session_id, message }) {
@@ -174,10 +218,15 @@ export function createToolHandlers({
     },
 
     async pi_result({ session_id }) {
-      if (!registry.has(session_id)) {
-        return text(`未知的 session_id "${session_id}"。有效的：${registry.ids().join(", ") || "(無)"}`, true);
+      // 未知 session 的錯誤訊息只有一份，就是 registry.get 拋的那句。舊版在這裡
+      // 自己重寫了一次（「有效的：」vs registry 的「目前有效的：」），兩份字串已經
+      // 漂移過一次；重複實作遲早會再漂。
+      let entry;
+      try {
+        entry = registry.get(session_id);
+      } catch (error) {
+        return text(String(error.message ?? error), true);
       }
-      const entry = registry.get(session_id);
       if (entry.verdict) return text(formatVerdict(entry.verdict));
       try {
         return text(formatVerdict(await entry.done));
@@ -198,11 +247,12 @@ export function createToolHandlers({
         if (filter === "last_n") {
           return text(events.slice(-n).map((e) => JSON.stringify(e)).join("\n") || "(無事件)");
         }
+        // 用 verdict.mjs 的同一支解析器：舊版這裡只認陣列型 content，於是
+        // 字串型 content 的訊息會出現在判決裡、卻從逐字稿消失。
         const said = events
-          .filter((e) => e.type === "message_end" && e.message?.role === "assistant")
-          .flatMap((e) => (Array.isArray(e.message.content) ? e.message.content : []))
-          .filter((p) => p?.type === "text")
-          .map((p) => p.text);
+          .filter((e) => e.type === "message_end")
+          .map((e) => assistantText(e.message))
+          .filter((t) => t !== "");
         return text(said.join("\n---\n") || "(無文字輸出)");
       });
     },
