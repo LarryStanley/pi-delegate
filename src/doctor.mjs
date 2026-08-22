@@ -1,16 +1,17 @@
 import { isDrafterModel, DEFAULTS } from "./config.mjs";
 
-// pi 的 model-registry 用這個綁定把「客戶端的 thinking 開關」接到伺服器端 chat
-// template 的 kwarg 上。字面值取自 pi 0.80.2 的 schema：
+// pi's model-registry uses this binding to wire the client-side "thinking" toggle to the
+// server-side chat template's kwarg. The literal value is taken from pi 0.80.2's schema:
 //   dist/core/model-registry.js:66
 //     $var: Type.Union([Type.Literal("thinking.enabled"), Type.Literal("thinking.effort")])
 export const THINKING_BINDING = { $var: "thinking.enabled" };
 
-// pi 解析 api / baseUrl 的順序（dist/core/model-registry.js:452-457）：
+// The order in which pi resolves api / baseUrl (dist/core/model-registry.js:452-457):
 //   const api = modelDef.api ?? providerConfig.api ?? builtInDefaults?.api;
 //   const baseUrl = modelDef.baseUrl ?? providerConfig.baseUrl ?? builtInDefaults?.baseUrl;
-// 這裡只看使用者自己寫在 models.json 裡的兩層；內建 provider 的預設值我們讀不到，
-// 讀不到就當作「無法判定」——見 chatTemplateThinkingApplies() 的保守處理。
+// We only see the two layers the user actually wrote into models.json; we cannot read a
+// built-in provider's defaults, and treat that as "cannot determine" — see the
+// conservative handling in chatTemplateThinkingApplies().
 function effectiveApi(provider, model) {
   return model?.api ?? provider?.api ?? null;
 }
@@ -19,9 +20,10 @@ function effectiveBaseUrl(provider, model) {
   return model?.baseUrl ?? provider?.baseUrl ?? null;
 }
 
-// 本機／內網端點的判準。命中就代表「模型跑在自己機器上的 OpenAI 相容伺服器」
-// （例如 omlx、LM Studio、llama.cpp、vLLM），thinking 只能靠 chat template kwarg
-// 關掉；沒命中就是託管端點，thinking 由該家 API 自己的參數控制。
+// Criteria for a local / LAN endpoint. A match means "the model runs on an
+// OpenAI-compatible server on this machine" (e.g. omlx, LM Studio, llama.cpp, vLLM),
+// where thinking can only be turned off via the chat template kwarg; no match means a
+// hosted endpoint, where thinking is controlled by that API's own parameters.
 export function isLocalBaseUrl(baseUrl) {
   if (typeof baseUrl !== "string" || baseUrl === "") return false;
   let host;
@@ -39,29 +41,34 @@ export function isLocalBaseUrl(baseUrl) {
   return false;
 }
 
-// `reasoning: true` + `compat.chatTemplateKwargs.enable_thinking` 這組要求是**真的**，
-// 但它只對一種 provider 成立，不是所有人都該被念。兩個查證過的理由：
+// The `reasoning: true` + `compat.chatTemplateKwargs.enable_thinking` requirement is
+// REAL, but it only holds for one kind of provider — not everybody should be nagged
+// about it. Two verified reasons:
 //
-// ① `chatTemplateKwargs` 只存在於 pi 的 **openai-completions** compat schema
-//    （dist/core/model-registry.js:92，在 OpenAICompletionsCompatSchema 裡）。
-//    OpenAIResponsesCompatSchema 與 AnthropicMessagesCompatSchema 完全沒有這個欄位 ——
-//    對 anthropic / openai-responses 的模型要求它，只會產生一筆永遠修不好的假問題。
-// ② 就算 api 是 openai-completions，託管端點（litellm、openrouter、OpenAI 本家…）
-//    的 thinking 也是由該服務自己的參數決定的，chat template kwarg 不會生效。
-//    只有本機／內網那台自己跑 chat template 的伺服器才需要這個綁定。
+// (1) `chatTemplateKwargs` exists ONLY in pi's **openai-completions** compat schema
+//     (dist/core/model-registry.js:92, inside OpenAICompletionsCompatSchema).
+//     OpenAIResponsesCompatSchema and AnthropicMessagesCompatSchema have no such field at
+//     all — requiring it for an anthropic / openai-responses model would produce a false
+//     problem that can never be fixed.
+// (2) Even when api is openai-completions, a hosted endpoint (litellm, openrouter,
+//     OpenAI itself, …) still controls thinking through its own service parameters, so
+//     the chat template kwarg has no effect there. Only a local/LAN server that runs its
+//     own chat template actually needs this binding.
 //
-// 判不出來（沒寫 api、沒寫 baseUrl、或 provider 根本不在 models.json 裡而是 pi
-// 的內建 provider）時一律**不報**：這道檢查的兩種錯代價不對稱 —— 漏報只是少一句
-// 提醒，誤報是對每個託管使用者在每次 SessionStart 噴一個他永遠修不掉的紅字。
+// Whenever it cannot be determined (no api written, no baseUrl written, or the provider
+// isn't in models.json at all because it's one of pi's built-ins), we NEVER raise a
+// problem: the two kinds of error here are asymmetric — a missed warning is just one
+// fewer reminder, but a false positive means every hosted-provider user gets a red flag
+// on every SessionStart that they can never fix.
 export function chatTemplateThinkingApplies(provider, model) {
   const api = effectiveApi(provider, model);
   if (api === null) {
-    return { applies: false, reason: "models.json 沒有寫 api，無法判定是否走 openai-completions，略過 thinking 綁定檢查" };
+    return { applies: false, reason: "models.json has no api set, so whether this is openai-completions cannot be determined; skipping the thinking-binding check" };
   }
   if (api !== "openai-completions") {
     return {
       applies: false,
-      reason: `api 是 "${api}"；pi 只有 openai-completions 的 compat schema 有 chatTemplateKwargs，此檢查不適用`,
+      reason: `api is "${api}"; only pi's openai-completions compat schema has chatTemplateKwargs, so this check does not apply`,
     };
   }
   const baseUrl = effectiveBaseUrl(provider, model);
@@ -69,13 +76,13 @@ export function chatTemplateThinkingApplies(provider, model) {
     return {
       applies: false,
       reason: baseUrl
-        ? `baseUrl ${baseUrl} 不是本機／內網端點；託管服務的 thinking 由它自己的 API 參數控制，此檢查不適用`
-        : "models.json 沒有寫 baseUrl，無法判定是不是本機伺服器，略過 thinking 綁定檢查",
+        ? `baseUrl ${baseUrl} is not a local/LAN endpoint; a hosted service controls thinking through its own API parameters, so this check does not apply`
+        : "models.json has no baseUrl set, so whether this is a local server cannot be determined; skipping the thinking-binding check",
     };
   }
   return {
     applies: true,
-    reason: `本機 openai-completions 端點（${baseUrl}）：--thinking off 要靠 chat template kwarg 才傳得到`,
+    reason: `Local openai-completions endpoint (${baseUrl}): --thinking off only reaches the model via the chat template kwarg`,
   };
 }
 
@@ -84,16 +91,18 @@ function hasThinkingBinding(model) {
   return JSON.stringify(bound) === JSON.stringify(THINKING_BINDING);
 }
 
-// checkModels 是**顧問**，不是驗收關卡。它回報「這次派工實際上會打到誰」，並且
-// 只在**確實成立**的條件下才提出問題。
+// checkModels is an **advisor**, not a gate. It reports which model a dispatch will
+// actually reach, and raises a problem only under conditions that **genuinely hold**.
 //
-// 舊版寫死兩個 Qwen id 當 REQUIRED_MODELS，缺了就報 model-missing、--fix 就把它們
-// 憑空插進 models.json —— 對沒有那台伺服器的人是在製造垃圾設定。
+// An earlier version hardcoded two Qwen ids as REQUIRED_MODELS: missing either reported
+// model-missing, and --fix inserted them into models.json out of thin air — for anyone
+// without that server, that's manufacturing garbage configuration.
 //
-// 特別注意：**provider 不在 models.json 裡不是問題**。models.json 只放使用者自訂的
-// provider；anthropic / openai / google 這些是 pi 內建的（pi-ai types.d.ts:17 的
-// KnownProvider union），它們本來就不會出現在這個檔案裡。對這種情況報
-// provider-missing 就是對每一個託管使用者噴假錯誤。
+// Note in particular: **a provider missing from models.json is not a problem.**
+// models.json only holds user-defined providers; anthropic / openai / google are built
+// into pi (the KnownProvider union in pi-ai's types.d.ts:17) and never appear in this
+// file in the first place. Reporting provider-missing for that case would be a false
+// error blasted at every hosted-provider user.
 export function checkModels(modelsCfg, selection = {}, options = {}) {
   const drafterPatterns = options.drafterPatterns ?? [...DEFAULTS.drafter_patterns];
   const problems = [];
@@ -109,19 +118,21 @@ export function checkModels(modelsCfg, selection = {}, options = {}) {
 
   if (!selection.provider || !selection.model) {
     checks.chat_template_thinking_reason =
-      "pi 尚未在 ~/.pi/agent/settings.json 設定 defaultProvider / defaultModel，" +
-      "pi 會自己挑第一個有 API key 的模型（model-resolver.js:461-475），這裡無從檢查。";
+      "pi has no defaultProvider / defaultModel configured in ~/.pi/agent/settings.json; " +
+      "pi will pick the first model with an API key on its own (model-resolver.js:461-475), " +
+      "so there is nothing to check here.";
     return { ok: true, problems, checks };
   }
 
-  // 副駕駛守門：只針對**實際會被派工的那個模型**提出警告，不去改使用者的 models.json。
+  // Drafter guard: only warns about the model that will **actually be dispatched to**;
+  // it never touches the user's models.json.
   if (isDrafterModel(selection.model, drafterPatterns)) {
     problems.push({
       code: "drafter-selected",
       message:
-        `即將派工的模型 ${selection.model} 命中副駕駛命名 pattern（${drafterPatterns.join(" / ")}）。` +
-        "推測解碼的 draft / assistant 模型直接呼叫會回 HTTP 500 —— 請改用 target model。" +
-        "若是誤判，在 pi-delegate config.json 調整 drafter_patterns。",
+        `The model about to be dispatched to, ${selection.model}, matches a drafter naming pattern (${drafterPatterns.join(" / ")}). ` +
+        "Speculative-decoding draft/assistant models return HTTP 500 when called directly — use the target model instead. " +
+        "If this is a false positive, adjust drafter_patterns in pi-delegate's config.json.",
       fixable: false,
     });
   }
@@ -129,8 +140,8 @@ export function checkModels(modelsCfg, selection = {}, options = {}) {
   const provider = modelsCfg?.providers?.[selection.provider];
   if (!provider) {
     checks.chat_template_thinking_reason =
-      `"${selection.provider}" 不在 ~/.pi/agent/models.json 裡 —— 多半是 pi 內建的 provider` +
-      "（anthropic / openai / google…），這是正常的，不需要處理。";
+      `"${selection.provider}" is not in ~/.pi/agent/models.json — most likely one of pi's ` +
+      "built-in providers (anthropic / openai / google / …), which is normal and needs no action.";
     return { ok: problems.length === 0, problems, checks };
   }
   checks.provider_in_models_json = true;
@@ -138,13 +149,14 @@ export function checkModels(modelsCfg, selection = {}, options = {}) {
   const models = provider.models ?? [];
   const model = models.find((m) => m.id === selection.model);
   if (!model) {
-    // 自訂 provider 底下找不到這個模型 id，也**不一定**是錯的：pi 對內建 provider
-    // 會把內建模型與自訂模型合併起來（model-registry.js 的 getAll()）。所以這裡
-    // 只記錄事實，不當成問題 —— 真的打不通時 pi 自己會回
-    // `Model "…" not found`（model-resolver.js:411）。
+    // Not finding this model id under a custom provider is **not necessarily** wrong
+    // either: for built-in providers, pi merges its built-in models with the user's
+    // custom ones (model-registry.js's getAll()). So this just records the fact rather
+    // than treating it as a problem — if the dispatch genuinely can't reach the model, pi
+    // itself will return `Model "…" not found` (model-resolver.js:411).
     checks.chat_template_thinking_reason =
-      `${selection.model} 沒有註冊在 models.json 的 "${selection.provider}" 底下` +
-      "（可能是該 provider 的內建模型），無從檢查 thinking 綁定。";
+      `${selection.model} is not registered under "${selection.provider}" in models.json ` +
+      "(it may be one of that provider's built-in models); the thinking binding cannot be checked.";
     return { ok: problems.length === 0, problems, checks };
   }
   checks.model_in_models_json = true;
@@ -156,14 +168,14 @@ export function checkModels(modelsCfg, selection = {}, options = {}) {
     if (model.reasoning !== true) {
       problems.push({
         code: "reasoning-missing",
-        message: `${model.id} 缺 reasoning:true —— 對本機 chat-template 伺服器來說，--thinking off 會靜默失效`,
+        message: `${model.id} is missing reasoning:true — on a local chat-template server, --thinking off silently has no effect`,
         fixable: true,
       });
     }
     if (!hasThinkingBinding(model)) {
       problems.push({
         code: "compat-missing",
-        message: `${model.id} 缺 compat.chatTemplateKwargs.enable_thinking 綁定 —— --thinking off 會靜默失效`,
+        message: `${model.id} is missing the compat.chatTemplateKwargs.enable_thinking binding — --thinking off silently has no effect`,
         fixable: true,
       });
     }
@@ -172,10 +184,12 @@ export function checkModels(modelsCfg, selection = {}, options = {}) {
   return { ok: problems.length === 0, problems, checks };
 }
 
-// fixModels 只補一件我們有把握的事：**已經註冊在 models.json 裡、而且確定是本機
-// openai-completions 端點**的那個模型，加上 thinking 綁定。
-// 它不會建立 provider、不會插入模型、不會碰其他模型 —— 那些需要 baseUrl / apiKey /
-// contextWindow 這些只有使用者知道的值，猜出來的設定比沒有設定更難除錯。
+// fixModels only patches the one thing it can be sure about: adding the thinking binding
+// to a model that is **already registered in models.json and confirmed to be a local
+// openai-completions endpoint**.
+// It never creates a provider, never inserts a model, never touches other models — those
+// need baseUrl / apiKey / contextWindow values that only the user knows, and a guessed
+// configuration is harder to debug than no configuration.
 export function fixModels(modelsCfg, selection = {}) {
   const next = structuredClone(modelsCfg ?? {});
   if (!selection.provider || !selection.model) return next;
