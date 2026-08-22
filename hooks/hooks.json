@@ -1,5 +1,5 @@
 {
-  "description": "pi-delegate 派工紀律與環境自檢",
+  "description": "pi-delegate dispatch discipline and environment self-check",
   "hooks": {
     "SessionStart": [
       {

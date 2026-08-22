@@ -52,27 +52,33 @@ function lastAssistantText(events) {
   return "";
 }
 
-// usage 掛在 AssistantMessage 上，不是事件的頂層欄位：
+// usage hangs off the AssistantMessage; it is not a top-level field of the event:
 //   @earendil-works/pi-ai types.d.ts:270-283 → `interface AssistantMessage { … usage: Usage … }`
-//   @earendil-works/pi-agent-core types.d.ts:360-398 → AgentEvent 的 message_update /
-//   message_end 只有 `message` 與 `assistantMessageEvent`，沒有 `usage`。
-// 舊版讀 `events[i].usage`，而 fixtures/fake-pi.mjs 自己發明了頂層 usage —— 替身跟
-// 實作源自同一個未經查證的假設，所以測試全綠、真實派工卻永遠 `in 0 / out 0`。
-// 底下的頂層 `?? event.usage` 只是容錯（真的有人把 usage 提到頂層時也讀得到）。
+//   @earendil-works/pi-agent-core types.d.ts:360-398 → AgentEvent's message_update /
+//   message_end carry only `message` and `assistantMessageEvent`, no `usage`.
+// The old code read `events[i].usage`, and fixtures/fake-pi.mjs invented a matching
+// top-level usage — double and implementation sprang from the same unverified assumption,
+// so the tests were all green while real dispatches always reported `in 0 / out 0`.
+// The top-level `?? event.usage` below is only tolerance (so a stream that really does
+// hoist usage still reads), not the contract.
 //
-// **每則訊息的 usage 不是累計值，要自己加總。** 這是對真品查證出來的：pi 自己的
-// `getSessionStats()`（dist/core/agent-session.js:2364-2404）就是這樣做的 ——
+// **Per-message usage is not cumulative; it has to be summed.** This was verified against
+// the shipped artifact: pi's own `getSessionStats()`
+// (dist/core/agent-session.js:2364-2404) does exactly this —
 //     for (const message of state.messages)
 //       if (message.role === "assistant") { totalInput += assistantMsg.usage.input;
 //                                           totalOutput += assistantMsg.usage.output; … }
-// 如果 usage 本身就是整場累計，pi 不需要加總。舊版只取「最後一個有 usage 的事件」，
-// 於是多輪派工的 output 被嚴重低報（只算得到最後一則回覆），input 則變成
-// 「收工當下的 context 長度」而不是整場輸入量 —— 欄位名寫 tokens，值卻不是總量。
+// If usage were already a running total, pi would not need to add it up. The old version
+// took only "the last event carrying usage", so a multi-turn dispatch under-reported
+// output badly (it counted just the final reply) while input became "the context size at
+// the moment of settling" rather than the run's input — a field named tokens whose value
+// was not a total.
 //
-// 加總的對象是 **message_end**，不是 message_update：一則訊息串流期間會發很多個
-// message_update，每個都帶當下的 usage 快照，加起來會重複計數。message_end 一則
-// 訊息只發一次（agent-session.js:277 就是在 message_end 上把訊息
-// appendMessage 進 session，也就是 getSessionStats 加總的那份 state.messages）。
+// What gets summed is **message_end**, not message_update: one message emits many
+// message_update events while streaming, each carrying a usage snapshot, and adding those
+// double-counts. message_end fires once per message (agent-session.js:277 is where a
+// message_end appends the message into the session — the same state.messages that
+// getSessionStats sums over).
 function totalUsage(events) {
   let input = 0;
   let output = 0;
@@ -88,8 +94,9 @@ function totalUsage(events) {
   }
   if (seen) return { input, output };
 
-  // 容錯：完全沒有帶 usage 的 message_end 時（只收到串流事件、或某個版本把 usage
-  // 提到事件頂層），退回「最後一個看得到的 usage」。這是 fallback，不是主要契約。
+  // Tolerance: when there is no message_end carrying usage at all (only streaming events
+  // arrived, or some version hoisted usage to the top level), fall back to "the last usage
+  // visible anywhere". This is a fallback, not the primary contract.
   for (let i = events.length - 1; i >= 0; i -= 1) {
     const usage = events[i]?.message?.usage ?? events[i]?.usage;
     if (usage) return { input: usage.input ?? 0, output: usage.output ?? 0 };
@@ -97,19 +104,24 @@ function totalUsage(events) {
   return { input: 0, output: 0 };
 }
 
-// 判定 "completed" 的終局訊號。曾經只認 `agent_settled`，但實跑 `pi --mode rpc`
-// 從沒看過那個事件 —— `fixtures/fake-pi.mjs` 也發同一個事件，測試替身和實作源自
-// 同一次誤讀，所以 94 個單元測試全綠也沒攔到：sync 派工在真實環境永遠等不到
-// `completed`，只能靠逾時收尾（詳見 2026-08-22 端到端驗證報告）。
+// The terminal signal that decides "completed". This used to accept only `agent_settled`,
+// but a real `pi --mode rpc` run has never emitted that event — `fixtures/fake-pi.mjs`
+// emitted the very same invented event, so the test double and the implementation both
+// grew out of one unverified reading, and 94 green unit tests caught nothing: in the real
+// environment a sync dispatch could never reach `completed` and had to be closed out by
+// the timeout (see the 2026-08-22 end-to-end verification report).
 //
-// 更正（本輪對真品查證的結果）：`agent_settled` **不是** pi RPC 文件裡描述的事件。
-// 0.80.2 隨附的 `docs/rpc.md:753` 事件表沒有它，`@earendil-works/pi-agent-core`
-// 的 `AgentEvent` union 也沒有（成員只有 agent_start / agent_end / turn_start /
-// turn_end / message_start / message_update / message_end /
-// tool_execution_{start,update,end}）。它從頭到尾就是測試替身發明出來的名字。
-// 留在 accepted set 裡不花成本，也對未來版本補上這個更強的訊號有前向相容價值 ——
-// 但它現在沒有任何文件依據，別再把「文件裡有」當成保留它的理由。
-// 真正在跑的是 `agent_end`：實測發出、也在型別與文件裡。
+// Correction (verified against the shipped artifacts): `agent_settled` is **not** an event
+// described anywhere in pi's RPC documentation. It is absent from the event table in the
+// `docs/rpc.md` shipped with 0.80.2, and absent from the `AgentEvent` union in
+// `@earendil-works/pi-agent-core` (whose members are only agent_start / agent_end /
+// turn_start / turn_end / message_start / message_update / message_end /
+// tool_execution_{start,update,end}). The name was invented by the test double from the
+// very beginning. Keeping it in the accepted set costs nothing and has forward-compatible
+// value should a future version add such a stronger signal — but there is no documentary
+// basis for it today, so never again cite "it is in the docs" as the reason to keep it.
+// What actually runs is `agent_end`: pi 0.80.2 emits it, and it exists in both the types
+// and the documentation.
 export const TERMINAL_SUCCESS_EVENTS = new Set(["agent_end", "agent_settled"]);
 
 // 「pi 回報的終局失敗」在真實 0.80.2 上有兩種形狀，兩種都要認：
@@ -154,8 +166,9 @@ export function isTerminalEvent(event) {
 function resolveStatus({ aborted, timedOut, failure, events }) {
   if (aborted) return "aborted";
   if (timedOut) return "timeout";
-  // pi 回報的終局失敗（推論伺服器掛了、model id 不存在…）比事件流裡任何東西都權威：
-  // 這種情況下不會再有 agent_end，硬等只會等到 timeout。
+  // A terminal failure reported by pi (inference server down, model id does not exist,
+  // ...) outranks anything in the event stream: no agent_end is coming in that case, and
+  // waiting for one only ever reaches the timeout.
   if (failure) return "failed";
   if (events.some(isTerminalEvent)) return "completed";
   return "failed";

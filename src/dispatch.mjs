@@ -13,26 +13,32 @@ const KILL_GRACE_MS = 2000;
 // 事件名稱，否則兩邊一邊認一邊不認，就會重新出現本輪要修的那個 bug
 // class（settle 訊號跟判決訊號對不上）。
 
-// 旗標分兩類，別把它們混為一談：
+// The flags fall into two classes; do not conflate them.
 //
-// **結構性**（固定，不開放覆寫）：`--mode rpc`（這個外掛就是靠 rpc 的雙向通道做
-// steer / abort）、`--session-id`（判決要對得上 session）、`--no-skills`、
-// `--no-extensions`（別把使用者的整套 pi 環境灌進一次派工），以及**刻意不帶**
-// `--no-session`（不帶才會落地 session，drill-down 讀得到）。
-// 注意：pi 沒有 --cwd，工作目錄靠 spawn 的 options.cwd。
+// **Structural** (fixed, not overridable): `--mode rpc` (this plugin exists on top of the
+// rpc bidirectional channel for steer/abort), `--session-id` (the verdict has to line up
+// with a session), `--no-skills` and `--no-extensions` (do not pour the user's entire pi
+// environment into a single dispatch), plus `--no-session` which is DELIBERATELY NOT
+// passed (omitting it is what makes the session land on disk so drill-down can read it).
+// Note: pi has no --cwd; the working directory comes from spawn's options.cwd.
 //
-// **量出來的預設**（可覆寫，理由寫在 server.mjs 的 tool 說明裡給呼叫端看）：
-//   --thinking off       小模型會把 budget 全花在思考上、一次 tool call 都不發；
-//                        但強的託管模型在難題上開 thinking 是有幫助的。
-//   --tools read,write,edit  給了 bash 會變成一直 ls/cat 漫遊而不動手。
-//   --no-context-files   實測：沒加 = 43 read / 0 write / 逾時；加了 = 93 秒完成。
-// 三個都用 null 表示「不要帶這個旗標，讓 pi 自己決定」。
+// **Measured defaults** (overridable; the rationale is repeated in the tool descriptions
+// in server.mjs so the caller sees it too):
+//   --thinking off       small local models spend their whole budget thinking and never
+//                        emit a single tool call; strong hosted models, on the other hand,
+//                        do benefit from thinking on hard problems.
+//   --tools read,write,edit  granting bash turned the agent into endless ls/cat roaming
+//                        instead of writing anything.
+//   --no-context-files   measured: without it, 43 reads / 0 writes / timed out; with it,
+//                        finished in 93 seconds.
+// All three take null to mean "do not emit this flag, let pi decide".
 //
-// provider / model 走三層解析（呼叫參數 → config.json → pi 自己的預設）。
-// **兩邊都沒有時就整個不帶旗標**，pi 會用 ~/.pi/agent/settings.json 的
-// defaultProvider / defaultModel —— 也就是使用者本來就在用的那個模型。
-// 這是預設路徑：不設定任何東西，這個外掛也能對 anthropic / openai / ollama /
-// 本機伺服器（例如 omlx 或 LM Studio）正常運作。
+// provider / model go through the three-layer resolution (call arguments → config.json →
+// pi's own defaults). **When neither layer supplies them, no flag is emitted at all** and
+// pi uses defaultProvider / defaultModel from ~/.pi/agent/settings.json — i.e. the model
+// the user already works with. That is the default path: with nothing configured, this
+// plugin works against anthropic / openai / ollama / a local server (omlx, LM Studio, …)
+// alike.
 export function buildPiArgs({
   sessionId,
   config = loadConfig(),
@@ -51,9 +57,10 @@ export function buildPiArgs({
   const resolvedAppend = appendSystemPrompt !== undefined ? appendSystemPrompt : config.append_system_prompt;
 
   if (resolvedThinking !== null && !THINKING_LEVELS.includes(resolvedThinking)) {
-    // pi 對不合法的 --thinking 值只印一句 warning 就**丟掉**（dist/cli/args.js:96-105），
-    // 靜默忽略一個被明確指定的覆寫是這個 codebase 反覆踩過的坑，所以在這裡先擋。
-    throw new Error(`不合法的 thinking 等級 "${resolvedThinking}"，只接受：${THINKING_LEVELS.join(" / ")}`);
+    // pi merely prints a warning for an invalid --thinking value and then DROPS it
+    // (dist/cli/args.js:96-105). Silently ignoring an override somebody asked for
+    // explicitly is a pit this codebase has fallen into repeatedly, so reject it here.
+    throw new Error(`Invalid thinking level "${resolvedThinking}". Accepted values: ${THINKING_LEVELS.join(" / ")}`);
   }
 
   const args = ["--mode", "rpc"];
@@ -118,7 +125,8 @@ export async function dispatch({
   const startedAt = Date.now();
   let aborted = false;
   let timedOut = false;
-  // pi 自己回報的終局失敗（推論伺服器掛了、model id 不存在…）。見下方 stdout handler。
+  // A terminal failure pi reports itself (inference server down, model id does not
+  // exist, ...). See the stdout handler below.
   let failure = null;
   let stderr = "";
   // `child.killed` only reflects whether kill() successfully *sent* a signal,

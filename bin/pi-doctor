@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// pi-delegate 的環境顧問。它**不要求**任何特定 provider 或模型 —— 只回報「派工實際
-// 上會打到誰」，並且只在確實成立的條件下提出問題（見 src/doctor.mjs 的說明）。
+// pi-delegate's environment advisor. It REQUIRES no particular provider or model — it
+// reports which model a dispatch will actually reach, and raises a problem only under
+// conditions that genuinely hold (see src/doctor.mjs for the reasoning).
 import { readFileSync, writeFileSync, copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { checkModels, fixModels } from "../src/doctor.mjs";
@@ -9,9 +10,11 @@ import { loadConfig, loadPiDefaults, configPath, piModelsPath, piSettingsPath } 
 const MODELS_PATH = piModelsPath();
 const mode = process.argv.includes("--fix") ? "fix" : "check";
 
-// 降級策略跟 src/modes.mjs / src/config.mjs 的 load() 一致：讀不到或解析不了就當成
-// 空設定往下走。標記放在模組變數上，不是塞進設定物件裡 —— fixModels 會把整份設定
-// 原樣寫回 models.json，任何我們自己加的欄位都會變成使用者檔案裡的垃圾。
+// Degradation strategy matches src/modes.mjs and src/config.mjs: unreadable or
+// unparseable means "treat as empty configuration and carry on". The flag lives in a
+// module variable rather than inside the config object, because fixModels writes the whole
+// configuration back to models.json and any field we invent would become garbage in the
+// user's file.
 let unreadable = false;
 function loadModels() {
   if (!existsSync(MODELS_PATH)) return { providers: {} };
@@ -27,8 +30,9 @@ function loadModels() {
 const config = loadConfig();
 const piDefaults = loadPiDefaults();
 
-// 派工實際會用的那一組：pi-delegate 的 config.json 有設就用它，沒有就是 pi 自己的
-// defaultProvider / defaultModel（旗標整個不帶時 pi 會這樣解析）。
+// The pair a dispatch will really use: pi-delegate's config.json when it sets one,
+// otherwise pi's own defaultProvider / defaultModel (what pi resolves when no flags are
+// passed).
 const selection = {
   provider: config.provider ?? piDefaults.provider,
   model: config.model ?? piDefaults.model,
@@ -66,14 +70,15 @@ if (ok) {
   process.exit(0);
 }
 
-// --fix 只動它有把握的那一類（本機 chat-template 伺服器缺 thinking 綁定）。
-// 其他問題（例如選到副駕駛模型）該由誰決定就交給誰，不把猜測寫進 models.json。
+// --fix only touches the class of problem it can be sure about (a local chat-template
+// server missing its thinking binding). Anything else is somebody's decision to make, and
+// we do not write guesses into their models.json.
 const fixable = problems.filter((p) => p.fixable);
 if (fixable.length === 0) {
   console.log(JSON.stringify({
     ok: false,
     changed: false,
-    note: "沒有可自動修復的問題 —— 下列各項需要你自己決定怎麼處理。",
+    note: "Nothing here can be repaired automatically — each item below needs you to decide how to handle it.",
     problems,
     ...context,
   }, null, 2));

@@ -15,7 +15,7 @@ function load(file) {
     const parsed = JSON.parse(readFileSync(file, "utf8"));
     return parsed && typeof parsed === "object" ? parsed : {};
   } catch {
-    // 狀態檔損毀不該讓 hook 掛掉 —— 回退到預設模式
+    // A corrupted state file must not crash the hook — fall back to the default mode
     return {};
   }
 }
@@ -27,7 +27,7 @@ export function getMode(projectPath, file = stateFilePath()) {
 
 export function setMode(projectPath, mode, file = stateFilePath()) {
   if (!MODES.includes(mode)) {
-    throw new Error(`不合法的模式 "${mode}"，只接受：${MODES.join(" / ")}`);
+    throw new Error(`Invalid mode "${mode}", must be one of: ${MODES.join(" / ")}`);
   }
   const state = load(file);
   state[projectPath] = mode;
