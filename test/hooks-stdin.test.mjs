@@ -172,7 +172,7 @@ function runDoctorCheck({ cwd, home }) {
   });
 }
 
-test("doctor-check: 模式公告與派工目標包在 hookSpecificOutput/SessionStart 裡", () => {
+test("doctor-check: the mode announcement and dispatch target are wrapped in hookSpecificOutput/SessionStart", () => {
   const project = tmpProject();
   const home = tmpHome();
   setMode(project, "strict", stateFileFor(home));
@@ -181,16 +181,17 @@ test("doctor-check: 模式公告與派工目標包在 hookSpecificOutput/Session
 
   assert.equal(result.status, 0);
   const out = JSON.parse(result.stdout);
-  assert.equal(out.additionalContext, undefined, "additionalContext 不能放在頂層");
+  assert.equal(out.additionalContext, undefined, "additionalContext must not sit at the top level");
   assert.equal(out.hookSpecificOutput.hookEventName, "SessionStart");
-  assert.match(out.hookSpecificOutput.additionalContext, /pi-delegate 模式：strict/);
-  assert.match(out.hookSpecificOutput.additionalContext, /派工目標/);
+  assert.match(out.hookSpecificOutput.additionalContext, /pi-delegate mode: strict/);
+  assert.match(out.hookSpecificOutput.additionalContext, /Dispatch target/);
 });
 
-// 這個 tmp HOME 底下什麼設定都沒有 —— 那是**正常狀態**（派工會用 pi 自己的預設
-// 模型），不是一堆待修的問題。舊版在這個情境會噴 provider-missing / model-missing，
-// 也就是對每一個剛裝好外掛的人在每次 SessionStart 噴紅字。
-test("doctor-check: 完全沒有設定時不報任何問題", () => {
+// This tmp HOME has no configuration whatsoever — which is the NORMAL state (dispatches
+// use pi's own default model), not a pile of problems to fix. The old version emitted
+// provider-missing / model-missing here, i.e. a red line at every freshly installed user on
+// every SessionStart.
+test("doctor-check: reports no problems at all when nothing is configured", () => {
   const project = tmpProject();
   const home = tmpHome();
   setMode(project, "soft", stateFileFor(home));
@@ -199,13 +200,14 @@ test("doctor-check: 完全沒有設定時不報任何問題", () => {
 
   assert.equal(result.status, 0);
   const context = JSON.parse(result.stdout).hookSpecificOutput.additionalContext;
-  assert.ok(!context.includes("⚠️"), `不該有警告：${context}`);
+  assert.ok(!context.includes("WARNING"), `there should be no warning: ${context}`);
   assert.ok(!context.includes("provider-missing"));
 });
 
-// 使用者的 pi 已經設好 defaultProvider / defaultModel（絕大多數人的狀態）——
-// 這時 doctor 要如實回報「派工會打到誰」，而不是要求他再設定一次。
-test("doctor-check: 回報 pi 自己的預設模型當作派工目標", () => {
+// The user's pi already has defaultProvider / defaultModel set (the state almost everyone
+// is in) — the doctor should report faithfully which model a dispatch will reach, not
+// demand they configure it a second time.
+test("doctor-check: reports pi own default model as the dispatch target", () => {
   const project = tmpProject();
   const home = tmpHome();
   setMode(project, "soft", stateFileFor(home));
@@ -220,10 +222,10 @@ test("doctor-check: 回報 pi 自己的預設模型當作派工目標", () => {
   assert.equal(result.status, 0);
   const context = JSON.parse(result.stdout).hookSpecificOutput.additionalContext;
   assert.match(context, /anthropic \/ claude-sonnet-4-6/);
-  assert.ok(!context.includes("⚠️"), `託管 provider 不該有任何警告：${context}`);
+  assert.ok(!context.includes("WARNING"), `a hosted provider should raise no warning at all: ${context}`);
 });
 
-test("doctor-check: models.json 壞掉時降級成警告，不是讓 hook 掛掉", () => {
+test("doctor-check: a broken models.json degrades to a warning instead of killing the hook", () => {
   const project = tmpProject();
   const home = tmpHome();
   setMode(project, "soft", stateFileFor(home));
@@ -232,9 +234,9 @@ test("doctor-check: models.json 壞掉時降級成警告，不是讓 hook 掛掉
 
   const result = runDoctorCheck({ cwd: project, home });
 
-  assert.equal(result.status, 0, `hook 不該非零退出：${result.stderr}`);
+  assert.equal(result.status, 0, `the hook must not exit non-zero: ${result.stderr}`);
   const out = JSON.parse(result.stdout);
   assert.equal(out.hookSpecificOutput.hookEventName, "SessionStart");
-  assert.match(out.hookSpecificOutput.additionalContext, /不是合法 JSON/);
-  assert.match(out.hookSpecificOutput.additionalContext, /pi-delegate 模式：soft/);
+  assert.match(out.hookSpecificOutput.additionalContext, /is not valid JSON/);
+  assert.match(out.hookSpecificOutput.additionalContext, /pi-delegate mode: soft/);
 });

@@ -401,7 +401,7 @@ test("model id 打錯（stopReason=error）判 failed 而不是 0 秒的假 comp
   assert.match(verdict.failure, /404 Model 'nope' not found/);
 });
 
-test("agent_end 帶 willRetry:true 時不收尾，等 pi 重試完的那個終局事件", async () => {
+test("an agent_end carrying willRetry:true does not settle; it waits for the terminal event after pi retries", async () => {
   const { dir, file } = tmpTask();
   const { done } = await dispatch({
     taskFile: file, cwd: dir, config: CONFIG, piDefaults: NO_PI_DEFAULTS, timeoutS: 20,
@@ -409,5 +409,5 @@ test("agent_end 帶 willRetry:true 時不收尾，等 pi 重試完的那個終�
   });
   const verdict = await done;
   assert.equal(verdict.status, "completed");
-  assert.equal(verdict.last_message, "重試之後成功了");
+  assert.equal(verdict.last_message, "Succeeded after retry");
 });

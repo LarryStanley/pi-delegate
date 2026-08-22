@@ -541,7 +541,7 @@ test("pi_transcript filter=text 也吃字串型 content（不再從逐字稿消�
 
 // --- [I7] 未知 session_id 的錯誤訊息只有一份 ---
 
-test("pi_result 與 pi_status 對未知 session_id 給出同一句錯誤", async () => {
+test("pi_result and pi_status give the same single sentence for an unknown session_id", async () => {
   const task = tmpFile("TASK.md");
   writeFileSync(task, "改 a.ts");
   const { handlers } = setup(fakeDispatch());
@@ -550,7 +550,7 @@ test("pi_result 與 pi_status 對未知 session_id 給出同一句錯誤", async
   const fromStatus = await handlers.pi_status({ session_id: "ghost" });
   assert.equal(fromResult.isError, true);
   assert.equal(fromResult.content[0].text, fromStatus.content[0].text);
-  assert.match(fromResult.content[0].text, /目前有效的：/);
+  assert.match(fromResult.content[0].text, /Currently valid:/);
 });
 
 // --- registry.add 要在 spawn 之前，否則撞號會留下孤兒 pi 行程 ---
