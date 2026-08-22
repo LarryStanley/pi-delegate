@@ -1,487 +1,525 @@
-# 驗證與審查：三層、階梯、證偽
+# Verification and Review: Three Layers, a Ladder, and Falsification
 
-> **這份文件裡的 `dispatch-pi.sh` / `run-queue.ps1` 這個外掛沒有附。**
-> 它們是這些實測數字當初的產生環境（舊的手寫腳本），文字與數字原樣保留當作依據。
-> 在 pi-delegate 裡對應的做法是 MCP tool：單件派工用 `pi_dispatch`，
-> 要扇出多件就用 `pi_dispatch mode=async` 連開幾件、再各自用 `pi_result` 收回判決
-> ——「同時開幾件」的寬度判斷、逾時與驗證紀律照這份文件走，只是換了派工的手把。
+> **The `dispatch-pi.sh` / `run-queue.ps1` plugin referenced in this document is not shipped here.**
+> They were the environment that produced these measured numbers (old hand-written scripts) — the text and the numbers are kept as-is because they're the evidence.
+> The equivalent in pi-delegate is the MCP tools: `pi_dispatch` for a single dispatch,
+> and `pi_dispatch mode=async` fired several times in a row for fan-out, each collected back with `pi_result`
+> — the judgment calls about concurrency width, timeouts, and verification discipline still apply exactly as written here; only the dispatch mechanism changed.
 
-**什麼時候讀這一份**：要驗收一批產出、要把第二層審查外包、或者
-**型別檢查／單元測試／建置全綠但畫面不對**。
+**When to read this**: you need to accept a batch of output, you want to outsource the second layer of review, or
+**type-checking / unit tests / build are all green but the screen is wrong**.
 
-核心：驗證一律在模型外面做，而且「跑得過」只是最低標。三道自動檢查問的是
-「現在這樣**合法**嗎」，**它們一個都不問「東西有沒有跑到錯的地方」**。
+Core idea: verification always happens outside the model, and "it runs" is only the floor. The three automated checks all ask
+"is this **legal** right now" — **none of them ever asks "did anything land in the wrong place."**
 
-← 回 `SKILL.md`（四路分流與紀律表）
+← back to `SKILL.md` (the four-way split and the discipline table)
 
-## 判準零的兩個腳本形狀
+## The two script shapes for criterion zero
 
-判準零說「查表就能決定的轉換寫腳本」。那支腳本長什麼樣是有形狀的，而且**同一輪
-還需要第二支**——因為第一支做完之後，沒有任何現成的檢查會問「有沒有東西跑到不該
-去的地方」。
+Criterion zero says: a transformation that's decidable by table lookup gets a script. That script has a shape, and
+the same round **needs a second one** — because once the first one is done, no existing check ever asks
+"did anything land somewhere it shouldn't have."
 
-### 形狀一：確定性套用器——**不確定就停下來回報，不要猜**
+### Shape one: the deterministic applier — **when unsure, stop and report; don't guess**
 
-這是它與小模型最重要的差別。小模型遇到模稜兩可會**猜一個看起來合理的**；
-腳本應該跳過並列出來，那份清單就是給人看的工作清單。
+This is the single most important difference between it and a small model. A small model facing ambiguity will
+**guess something that looks plausible**; the script should skip and list it — that list is the work list for a human.
 
 ```js
 for (const rule of rules) {
-  // 1. 這個目標「可以動」嗎——判準要窄，窄了才可證明安全
-  if (!isConvertible(rule.selector)) { skipped.push({rule, why: '不是單一 class'}); continue; }
+  // 1. Is this target even "movable" — the criterion must be narrow, because narrow is what makes it provably safe
+  if (!isConvertible(rule.selector)) { skipped.push({rule, why: 'not a single class'}); continue; }
 
-  // 2. 落點唯一嗎——多個候選時「該套哪一個」不是機械問題
+  // 2. Is the landing spot unique — with multiple candidates, "which one to apply to" is not a mechanical decision
   const hits = countExact(markup, rule.name);
-  if (hits !== 1) { skipped.push({rule, why: `有 ${hits} 個候選`}); continue; }
+  if (hits !== 1) { skipped.push({rule, why: `${hits} candidates`}); continue; }
 
-  // 3. 逐條查表。表上沒有的**原封不動留著**，不要就近取整、不要推論
+  // 3. Look up each declaration one by one. Anything not on the table is left **untouched** — no rounding, no inference
   for (const decl of rule.declarations) {
-    const out = lookup(decl);          // null = 不在表上
+    const out = lookup(decl);          // null = not on the table
     if (out === null) { left.push(decl); continue; }
     apply(decl, out);
   }
 }
-console.log(`套用 ${applied.length}，跳過 ${skipped.length}`);
-for (const s of skipped) console.log(`  ${s.rule.selector}  ${s.why}`);  // ← 工作清單
+console.log(`applied ${applied.length}, skipped ${skipped.length}`);
+for (const s of skipped) console.log(`  ${s.rule.selector}  ${s.why}`);  // ← the work list
 ```
 
-實測在一個 1264 行的檔案上自動處理約六成，剩下四成是狀態變體與關係選擇器
-——那四成本來就該由人看。**六成免費、四成有清單，比「全部派工然後審 33 份 diff」好。**
+Measured: on a 1264-line file this auto-processed about 60%, with the remaining 40% being state variants and
+relational selectors — that 40% should be looked at by a human anyway. **60% free, 40% with a list beats "dispatch everything and review 33 diffs."**
 
-### 形狀二：跟 HEAD 比一比——**問「有沒有東西跑到不該去的地方」**
+### Shape two: diff against HEAD — **ask "did anything land somewhere it shouldn't have"**
 
-型別檢查、單元測試、建置**都不問這個問題**。它們問的是「現在這樣合法嗎」，
-而大型機械重構最典型的錯是「合法，但搬到錯的地方了」。
+Type-checking, unit tests, and build **never ask this question**. They ask "is this legal right now,"
+and the single most typical bug in a large mechanical refactor is "legal, but landed in the wrong place."
 
 ```js
 const before = rules(styleOf(execSync(`git show HEAD:"${file}"`)));
 const after  = rules(styleOf(readFileSync(file)));
 
 for (const [selector, decls] of before) {
-  if (isSafeToHaveConverted(selector)) continue;   // 這種被搬走是正常的
+  if (isSafeToHaveConverted(selector)) continue;   // it's normal for this one to have been moved
   for (const d of decls) {
     if (!(after.get(selector) ?? []).includes(d)) lost.push(`${selector} { ${d} }`);
   }
 }
 ```
 
-**判準要比套用器寬一格。** 套用器保守是對的（它看不到全局）；稽核如果一樣保守就會
-對正確的轉換發警報，而一條會誤報的規則最後一定會被關掉。差的那一格要寫在函式上，
-不是留給下一個人猜。
+**The criterion here should be one notch looser than the applier's.** The applier being conservative is correct
+(it can't see the whole picture); if the auditor is equally conservative it will fire false alarms on correct
+conversions, and a rule that false-alarms always ends up getting turned off. That extra notch of looseness belongs
+in the function, not left for the next person to guess.
 
-實測這支在 33 個檔案裡抓到 **16 個**被錯誤轉換的，而型別檢查、單元測試、建置
-**一個都沒抓到**（型別檢查只抓到 3 處剛好變成語法錯誤的，那是同一缺陷的另一種症狀）。
+Measured: this script caught **16** files out of 33 that had been converted incorrectly, while type-checking, unit
+tests, and build **caught none of them** (type-checking only caught 3 spots that happened to turn into syntax
+errors — that's a different symptom of the same defect).
 
-⚠ 這兩支腳本會共用一些判準（「什麼可以轉」「這個名字在哪裡出現」）。
-**那些判準要抽成一份**——見下面「同一條判準寫兩次」那一節，那個坑我在同一輪踩了兩次。
+⚠ These two scripts share some criteria ("what's convertible," "where does this name show up").
+**Those need to be factored into one place** — see "writing the same criterion twice" below; I hit that pothole
+twice in the same round.
 
-### 先爬階梯，不要直接跳到最貴的那一階
+### Climb the ladder — don't jump straight to the most expensive rung
 
-「三道檢查不會問東西有沒有跑到錯的地方」這句話是對的，但它不代表**每一次**都要
-開瀏覽器。同一輪裡三個同形狀的缺陷，抓到它們的手段成本差三個數量級：
+"The three checks never ask whether anything landed in the wrong place" is true, but it doesn't mean **every time**
+you need to open a browser. Three same-shaped bugs in the same round, and the cost of the tool that catches each
+one differs by three orders of magnitude:
 
-| 階 | 手段 | 成本 | 抓到什麼 |
+| Rung | Tool | Cost | What it caught |
 |---|---|---|---|
-| 1 | **靜態規則**（一條測試掃原始碼） | 秒 | 註解提早關閉，害後面七行變成畫面上的文字。三道檢查全綠（`<div>` 裡放文字是合法的） |
-| 2 | **跟 HEAD 比**（形狀二那支） | 分鐘 | 宣告從 `.body` 落到 `.warn-body`。合法，但搬錯地方 |
-| 3 | **開瀏覽器量 computed style** | 十分鐘＋要跑起來 | 一整批 markup 沒寫進去。check 0/0、build 0、測試綠，而 390px 顯示完整桌面版 |
+| 1 | **Static rule** (a test that scans source) | seconds | A comment closed early, turning the next seven lines into visible text on screen. All three checks green (text inside a `<div>` is legal) |
+| 2 | **Diff against HEAD** (shape two above) | minutes | A declaration fell from `.body` to `.warn-body`. Legal, but landed in the wrong place |
+| 3 | **Open a browser and measure computed style** | ten minutes+, and it has to be running | A whole batch of markup never got written in. Type-check 0/0, build 0, tests green, and at 390px the full desktop layout is displayed |
 
-**規則：能變成靜態規則的就變成靜態規則，剩下的才留給量測。** 判斷方法是問
-「這個錯在原始碼裡看得出來嗎」——第 1 階的那個看得出來（`-->` 出現在深度 0），
-所以它不該由人眼或瀏覽器承擔；第 3 階的看不出來（缺的東西不在檔案裡）。
+**Rule: whatever can become a static rule should become a static rule; only what's left goes to measurement.**
+The test is "can this bug be seen in the source" — rung 1's bug can (`-->` shows up at depth 0), so it should
+never be a human's or a browser's job; rung 3's bug can't (the missing thing isn't in the file at all).
 
-第 1 階那條規則長這樣，全文十幾行：HTML 註解不能嵌套，所以深度只有 0 或 1，
-先剝掉 `<script>`／`<style>`（那裡面的 `-->` 不是 HTML 註解），然後走一遍，
-「深度 0 卻先看到 `-->`」就紅。**證偽過才算數**——把 `-->` 放回原處，它要指名
-那個檔案變紅。
+The rung-1 rule reads about fifteen lines total: HTML comments don't nest, so depth is only ever 0 or 1;
+strip `<script>`/`<style>` first (the `-->` inside those isn't an HTML comment), then walk through —
+"seeing `-->` at depth 0" turns it red. **It only counts once it's been falsified** — put the `-->` back
+where it was and it must turn that exact file red.
 
-### 量測驗過模型之後，那一整類就不必再量了
+### Once measurement has validated a model, you don't need to measure that whole class again
 
-規格裡寫著「這一格算不出來，只能量」——指的是 CSS `filter` 合成之後的實際顏色。
-量完的收穫比那一格大得多：
+The spec said "this cell can't be computed, only measured" — referring to the actual colour after CSS `filter`
+compositing. What the measurement bought was much bigger than that one cell:
 
-| | 量到 | 用「sRGB 亮度矩陣 → α 疊底」算的 |
+| | Measured | Computed from "sRGB luminance matrix → alpha composite" |
 |---|---|---|
-| dim 態的大面積填色 | `rgb(237,237,237)` | `rgb(237,237,238)` |
-| dim 態最深的描邊像素 | `rgb(120,121,121)` | `rgb(121,121,121)` |
+| Large fill area in dim state | `rgb(237,237,237)` | `rgb(237,237,238)` |
+| Darkest stroke pixel in dim state | `rgb(120,121,121)` | `rgb(121,121,121)` |
 
-**1/255 以內，而且是兩個獨立的量測對上同一個模型**（第二列是拿未 dim 態量到的
-抗鋸齒覆蓋率反推，再餵進模型預測 dim 態）。所以那句「算不出來」可以撤掉——
-**之後這一類合成直接算，不必開瀏覽器**。
+**Within 1/255, and that's two independent measurements agreeing with the same model** (the second row was
+derived by taking the anti-aliasing coverage measured in the non-dim state and feeding it into the model to
+predict the dim state). So the line "can't be computed" can be struck — **from here on this whole class of
+compositing can just be computed, no browser required.**
 
-這就是「貴模型解鎖一次」用在量測上：**一次量測的產出不是一個數字，是一個
-已驗證的模型**，而模型可以用 N 次。派工前值得問一句：我這次要量的東西，
-是不是量完就能讓後面 N 次都改成算的？
+This is what "spend the expensive model once to unlock it" looks like applied to measurement: **the output of
+one measurement isn't a number, it's a validated model**, and a model can be reused N times. Worth asking before
+dispatching: is what I'm about to measure something that, once measured, turns the next N times into a computation?
 
-⚠ 兩個讓量測騙人的陷阱，各記一行：
+⚠ Two traps that make measurement lie, one line each:
 
-- **有 `transition` 的屬性，加上 class 之後立刻讀會拿到過渡的第一格。**
-  實測 `transition: filter .12s`，讀到 `grayscale(0)` ——看起來像「規則沒生效」，
-  差點往「選擇器沒對上」的方向查。量之前先等。
-- **抗鋸齒讓最深的像素永遠到不了標稱值。** 2px 虛線、小數座標、dpr=1，
-  量到的最深描邊是 `rgb(76,79,81)` 而不是 `#14181b`（覆蓋率約 0.74）。
-  **別從邊緣像素推論「對比不足」**——不然每一條細線都不合格。
+- **A property with a `transition`, read immediately after adding the class, gets caught mid-transition.**
+  Measured: `transition: filter .12s`, and the read came back `grayscale(0)` — looks like "the rule didn't take,"
+  and it nearly got investigated as "the selector isn't matching." Wait before you measure.
+- **Anti-aliasing means the darkest pixel never reaches the nominal value.** With a 2px dashed line, fractional
+  coordinates, dpr=1, the darkest stroke pixel measured was `rgb(76,79,81)`, not `#14181b` (coverage ~0.74).
+  **Don't infer "insufficient contrast" from an edge pixel** — or every thin line will fail.
 
+## Verification happens outside the model
 
-## 驗證要在模型外面做
+The task book asks it to report back "how many passed, what's the coverage," and it will give you a number —
+**that number is not guaranteed to be the number that actually ran.** The dispatch script re-runs it once itself;
+the cost is negligible. See `run-queue.ps1` in this directory.
 
-任務書要它回報「幾條通過、覆蓋率多少」，它會給你數字——**那個數字不保證是跑出來的**。
-派工腳本自己再跑一次，成本可以忽略。see `run-queue.ps1` in this directory。
+**But "it runs" is only the floor, not the acceptance bar.** The following, in ascending order of strength — do at
+least as far as the mutation check:
 
-**但「跑得過」只是最低標，不是驗收標準。** 下面這幾項按強度排序，至少做到變異檢查：
-
-| 強度 | 檢查 |
+| Strength | Check |
 |---|---|
-| 最低 | 外部重跑，看 exit code（不要接 `\| tail`，會把失敗碼吃掉） |
-| 必要 | `git diff --stat`：只准新增測試檔。改到產品程式碼讓測試變綠是最常見的作弊 |
-| 必要 | 掃廢測試：`toBeDefined`、`expect(true)`、`.skip`、沒有 `expect` 的 `it()` |
-| **關鍵** | **變異檢查**：抽幾支，故意把受測程式碼改壞，測試**必須變紅**。不紅就代表那份測試沒咬到任何東西——這是唯一能分辨「真測試」與「綠色裝飾」的方法 |
+| Minimum | Rerun externally, check the exit code (don't pipe through `\| tail` — that swallows the failure code) |
+| Required | `git diff --stat`: only new test files should be allowed. Making product code changes to turn tests green is the most common form of cheating |
+| Required | Scan for dead tests: `toBeDefined`, `expect(true)`, `.skip`, an `it()` with no `expect` |
+| **Critical** | **Mutation check**: pick a few at random, deliberately break the code under test, and the tests **must go red**. If they don't, that test suite isn't touching anything — this is the only way to tell "a real test" from "green decoration" |
 
-覆蓋率數字只當輔助訊號，不當通過標準：測試可以覆蓋到每一行卻什麼都沒斷言。
+Coverage numbers are only a supporting signal, never a pass bar: a test can cover every line and assert nothing.
 
-再加一項，強度跟變異檢查同級但問的是完全不同的事：
+One more item, same strength as the mutation check but asking an entirely different question:
 
-| 強度 | 檢查 |
+| Strength | Check |
 |---|---|
-| **關鍵** | **專案自己的發布閘門**：這個 repo 的部署／弱掃／lint 會不會擋這份產出 |
+| **Critical** | **The project's own release gate**: will this repo's deploy / vulnerability scan / lint reject this output |
 
-### 產出還要過「跟功能無關的發布閘門」
+### Output also has to pass "release gates unrelated to the feature"
 
-**「測試全綠」不等於「發得出去」。** 每個專案都有幾條判形狀不判行為的閘門規則，而派工
-的產出天生會撞上它們——**模型從來沒被告知那份黑名單存在**，任務書裡也很少有人想到要寫。
+**"All tests green" is not the same as "shippable."** Every project has a handful of gate rules that judge shape,
+not behaviour, and dispatched output runs straight into them by nature — **the model was never told that
+blocklist exists**, and the task book rarely thinks to mention it either.
 
-最貴的一次（2026-08-21）：一份 21 條全綠、變異檢查五個全中的測試檔，裡面兩個裸的
-`.sort()`。公司弱掃把裸 `.sort()`（沒有比較函式）評成 **CRITICAL**，而 Tier 2 發布要求
-0 CRITICAL —— **測試檔裡的排序寫法一樣算**，光那一支就足以讓整個服務發不出去。
+The most expensive instance (2026-08-21): a test file with 21/21 green and all five planted mutations caught,
+containing two bare `.sort()` calls. The company's vulnerability scanner rates a bare `.sort()` (no comparator)
+as **CRITICAL**, and Tier 2 release requires 0 CRITICAL — **it counts even inside a test file** — and that one
+finding alone was enough to block the whole service from shipping.
 
-為什麼所有既有的驗收都抓不到：**它跟功能正確性完全無關。** 外部重跑綠、變異檢查紅得
-漂亮、`git diff --stat` 只有新增測試檔、廢測試掃描乾淨、型別檢查過。那道閘門問的是
-「這個字串樣式在不在黑名單上」，而模型從來沒被告知那份黑名單存在。
+Why none of the existing acceptance checks caught it: **it has nothing to do with functional correctness.**
+External rerun green, mutation check red exactly as expected, `git diff --stat` shows only new test files, dead-test
+scan clean, type-check passes. That gate asks "is this string pattern on the blocklist," and the model was never
+told that blocklist exists.
 
-做法有兩條，兩條都要：
+Two things to do, and you need both:
 
-1. **把已知的閘門規則寫進任務書**（「排序一律 `.sort((a, b) => a.localeCompare(b))`」），
-   而且要寫成**具體動作**，不是「注意安全」。
-2. **驗收多一道靜態掃描**，因為第 1 條會漏——任務書不可能列完整份黑名單，而漏掉的那
-   一條你要在 push 之前知道，不是在部署被擋掉之後：
+1. **Write the known gate rules into the task book** (e.g. "sorting is always `.sort((a, b) => a.localeCompare(b))`"),
+   and phrase them as **concrete actions**, not "be careful about security."
+2. **Add one more static scan at acceptance time**, because item 1 will still miss things — the task book can never
+   enumerate the whole blocklist, and the entries it misses are the ones you need to know about before push, not
+   after deployment gets blocked:
 
 ```bash
 scripts/pi-gate-scan.sh $(git diff --name-only --cached)
 ```
 
-那支的規則表就是「這個專案的閘門地雷」，**第一次被擋就把那條加進去**。它刻意跳過整行
-都是註解的行——第一版沒跳，於是命中了「解釋為什麼不能裸 `.sort()` 的那句註解」，而誤報
-會讓人開始忽略這支腳本，接著漏抓也就不會被發現。
+That script's rule table *is* this project's list of gate landmines — **the first time something gets blocked,
+add that rule to the list.** It deliberately skips lines that are entirely comments — the first version didn't,
+and it fired on the very comment explaining why bare `.sort()` isn't allowed; a false positive like that trains
+people to start ignoring the script, and then the real misses stop being noticed too.
 
-**判準：凡是「測試全綠但仍然發不出去」的規則，都屬於這一類。** 它們的共同點是判的是
-**形狀**不是行為，所以只有靜態 grep 抓得到，而且只要一筆就夠擋。
+**Criterion: any rule of the shape "tests all green but still won't ship" belongs to this class.** What they have
+in common is that they judge **shape**, not behaviour, so only a static grep catches them, and one hit is enough
+to block a release.
 
-### 一次打多個變異，它們會互相遮蔽
+### Firing multiple mutations at once — they can mask each other
 
-變異檢查一支一支跑很貴（這個專案一次 `vitest run` 是 80 秒實際時間），所以會想把
-五個變異一起套上去、看紅的條數對不對。**可以，但只數條數是不夠的——要逐條比對紅的
-是不是預期的那幾條。**
+Running the mutation check one mutation at a time is expensive (a single `vitest run` in this project is 80
+wall-clock seconds), so it's tempting to apply five mutations at once and just check whether the red count matches.
+**You can — but counting reds is not enough. You have to match each red test against the one it was expected to catch.**
 
-實測：同一批裡有「忽略『已經按過』的旗標」與「提示永遠不要自動打開」兩個變異。後者
-讓提示根本不出現，於是前者該讓它紅的那條測試**照樣是綠的**——條數少一條，而如果只看
-「有五個變異、紅了四條，大概有一個變異沒套上」，會誤判成腳本的 assert 沒生效。
+Measured: one batch had two mutations, "ignore the 'already dismissed' flag" and "the prompt never auto-opens."
+The second one meant the prompt never appeared at all, so the test that the first mutation was supposed to turn
+red **stayed green** — one fewer red than expected, and if you only look at "5 mutations, 4 went red, probably one
+mutation didn't take," you'd misdiagnose it as the script's assertion not firing.
 
-規則：
-- 同一批裡的變異必須**目標測試不重疊**，而且**不能有一個變異是另一個的上游**
-  （「這個功能整段關掉」會遮蔽「這個功能的某個條件寫錯」）。
-- 腳本要印**紅的測試名字**，不是只印 `N failed`。
-- 對不上就把那一批拆開重跑——被遮蔽的那個變異，等於那條測試從來沒被證偽過。
+Rules:
+- Mutations in the same batch must have **non-overlapping target tests**, and **none can be upstream of another**
+  ("turn this whole feature off" masks "one condition in this feature is wrong").
+- The script should print the **names of the red tests**, not just `N failed`.
+- If the names don't match up, split the batch and rerun — a masked mutation means that test was never actually falsified.
 
-### 審查有三層，而中間那一層可以外包
+### Review has three layers, and only the middle one is not safe to outsource
 
-「驗收留給自己」講得太寬。實際上審查裡有三種東西，只有第三種不能外包：
+"Leave acceptance to yourself" was too broad a claim. In practice, review breaks into three kinds of work, and only
+the third can't be outsourced:
 
-| 層 | 交給誰 | 例子 |
+| Layer | Who does it | Example |
 |---|---|---|
-| **可判定** | **腳本** | 改動範圍有沒有越界、有沒有多生檔案、廢測試樣式、該維持不動的東西還在不在 |
-| **機械但難寫成腳本** | **小模型** | 把一份值表逐筆對回原始碼、確認「每一個被點名的位置是不是都改了」、檢查註解裡寫的數字與實際的值是否一致 |
-| **需要判斷** | **強模型／你自己** | 算式對不對、這條斷言有沒有真的咬到東西、註解講的理由是不是真的、有沒有過度設計 |
+| **Decidable** | **A script** | Did the change scope stay in bounds, were extra files generated, dead-test patterns, is what should be untouched still there |
+| **Mechanical but hard to script** | **A small model** | Match a table of values back against the source line by line, confirm every named location actually got changed, check that a number written in a comment matches the actual value |
+| **Needs judgment** | **A strong model / you** | Is the formula correct, does this assertion actually catch anything, is the reasoning in the comment actually true, is this over-engineered |
 
-實測（2026-08-19）：把 37 枚色值對回一支 330 行的 CSS，輸出固定格式的判決——
-`Qwen3.8-27B-oQ4e-mtp` 的結果與獨立腳本算出的正確答案**38 行位元級一致**，
-3 read / 1 write，沒有動任何原始碼。
+Measured (2026-08-19): matching 37 colour values back against a 330-line CSS file, output as a fixed-format verdict —
+`Qwen3.8-27B-oQ4e-mtp`'s result was **bit-for-bit identical across all 38 lines** to an independent script's correct
+answer, with 3 reads / 1 write, and it never touched any source code.
 
-**關鍵是任務形狀，不是「審查」這個標籤。** 那一份任務書給的是
-「讀清單 → 讀檔案 → 每一筆輸出 OK/BAD/MISSING，清單幾筆就輸出幾行」——
-跟派工任務書一樣是**正面配方 ＋ 固定輸出格式**。它沒有被要求發表意見。
+**What matters is the shape of the task, not the label "review."** That task book gave it "read the list → read
+the file → output OK/BAD/MISSING for every entry, one output line per list entry" — the same
+**positive recipe + fixed output format** as a dispatch task book. It was never asked for an opinion.
 
-反過來說，**不要**叫小模型「審查這份 diff、找出問題」。那是第三層，
-它會給出聽起來很有把握但不可靠的意見——**比沒有審查更糟，因為它製造假的安心感**。
-同一顆模型在第二層零錯誤、在第三層不可信，差別全在任務形狀。
+Conversely, **don't** tell a small model "review this diff, find the problems." That's the third layer, and it
+will hand back an opinion that sounds confident and is unreliable — **worse than no review at all, because it
+manufactures false confidence.** The same model is zero-error at the second layer and untrustworthy at the third —
+the entire difference is the shape of the task.
 
-第二層值得外包的真正理由不是省那幾分錢，是**它讓第三層的工作量縮小**：
-強模型不必再逐枚核對 hex，可以只看那些真的需要判斷的東西。
+The real reason the second layer is worth outsourcing isn't the few cents it saves — it's that **it shrinks the
+third layer's workload**: the strong model no longer has to check every single hex value by hand, and can spend
+its attention only on what genuinely needs judgment.
 
-#### 第二層的可複製做法：把「要比對什麼」變成兩份清單
+#### A repeatable recipe for the second layer: turn "what to compare" into two lists
 
-第二層之所以常被跳過，是因為「要它審什麼」很難講清楚。有一個一再管用的形狀：
-**自己先用腳本把兩邊各抽成一份純清單，再讓小模型比對那兩份清單。**
+The second layer gets skipped a lot because "what should it review" is hard to specify. One shape keeps working:
+**write a script that extracts both sides into plain lists first, then have the small model diff those two lists.**
 
-實例（2026-08-20，一批「只准改 CSS 選擇器、不准動宣告」的派工）：
+Example (2026-08-20, a batch of dispatches restricted to "only change CSS selectors, don't touch declarations"):
 
 ```js
-// 腳本負責抽取與正規化——這一段可判定，屬於第一層
+// The script owns extraction and normalization — this part is decidable, layer one
 function declarations(css) {
   return css.replace(/\/\*[\s\S]*?\*\//g, '').split('
 ')
     .map(l => l.trim())
-    .filter(l => /^[a-z-]+\s*:\s*[^;]*;$/.test(l))   // 只留宣告，選擇器丟掉
+    .filter(l => /^[a-z-]+\s*:\s*[^;]*;$/.test(l))   // keep declarations only, discard selectors
     .map(l => l.replace(/\s+/g, ' '));
 }
-// 每個目標檔產生一個 CMP-N.txt：「改之前的宣告」與「改之後的宣告」兩份清單
+// For each target file, produce a CMP-N.txt with two lists: "declarations before" and "declarations after"
 ```
 
-任務書只要求一件事，而且輸出格式固定到不需要判斷：
+The task book asks for exactly one thing, and the output format is fixed enough to need no judgment:
 
 ```markdown
-那個檔案裡有兩份清單，它們**應該一模一樣**。把「改之後」少掉的、多出來的、
-或值變了的列出來。
+The file contains two lists. They **should be identical**. List anything missing from "after," anything
+extra in "after," or any value that changed.
 
-第一行只寫一個字：相同 → `SAME`，有任何不同 → `DIFF`。
-若是 DIFF，接下來每行一筆：`少了: <宣告>` 或 `多了: <宣告>`。
+The first line is a single word only: identical → `SAME`, any difference → `DIFF`.
+If DIFF, one line per finding after that: `missing: <declaration>` or `extra: <declaration>`.
 
-不要判斷「這樣改對不對」——只回報兩份清單哪裡不一樣。
+Do not judge "is this change correct" — only report where the two lists differ.
 ```
 
-結果：10 份任務全部回 `SAME`，共 121 條宣告零筆不一致，wall 198 秒（寬度 8）。
+Result: all 10 tasks came back `SAME`, 121 declarations checked with zero mismatches, 198 seconds wall time
+(concurrency width 8).
 
-**為什麼這一項不寫成腳本**（這是選層的判準，值得寫下來）：選擇器被改寫之後，
-naive 的 text diff 每一條規則都是「變了」，雜訊蓋掉訊號；要精準比對就得寫一個
-CSS parser ＋ 選擇器正規化，那比讓小模型逐條讀過去貴得多，**而且 parser 自己的
-邊界條件會變成新的 bug 來源**——一個會誤報的審查工具最後一定會被關掉。
+**Why this step isn't a script** (this is the criterion for choosing a layer, worth writing down): once the
+selector is rewritten, a naive text diff flags every single rule as "changed" — the noise drowns the signal;
+doing this precisely would require a CSS parser plus selector normalization, which costs far more than letting a
+small model read through it line by line, **and the parser's own edge cases become a new source of bugs** —
+a review tool that false-alarms always ends up getting turned off.
 
-**判準：抽取與正規化能寫成腳本 → 寫腳本；比對本身需要逐條讀但不需要判斷
-→ 給小模型；「這樣改對不對」→ 留給自己。** 同一件審查工作常常橫跨三層，
-要拆開而不是整包丟給一邊。
+**Criterion: if extraction and normalization can be scripted → script it. If the comparison itself needs to be
+read line by line but doesn't need judgment → give it to a small model. If it's "is this change correct" →
+keep it for yourself.** The same review job often spans all three layers — split it up, don't hand the whole
+thing to one side.
 
-那一輪第三層抓到的、前兩層都抓不到的東西：除役一個全域 class 的時候，
-它身上有兩個宣告（`text-decoration: none`、`cursor: pointer`）**沒有任何接手的人**，
-而那兩個都不會讓任何測試紅。第一層驗的是「有沒有越界」、第二層驗的是
-「兩份清單一不一樣」，都不會問「這個宣告消失了誰會受影響」。
+What the third layer caught in that round, that the first two missed: when a global class was retired, it carried
+two declarations (`text-decoration: none`, `cursor: pointer`) that **nobody picked up** — and neither one would
+turn any test red. Layer one checked "did anything cross scope," layer two checked "do the two lists match" —
+neither ever asks "who's affected when this declaration disappears."
 
-### 讓 pi 修自己的錯，但驗證留在外面——把「修補回合」自動化
+### Have pi fix its own mistakes, but keep verification outside — automate the "patch round"
 
-上一節的「加一輪修補」如果每次都靠人貼失敗訊息、手寫任務書、手動派工，
-那個手續費會讓人乾脆不做，於是產出的紅的部分就被整批丟掉。**它應該是一支腳本。**
+If the "add a patch round" idea from the previous section always means a human pastes the failure message,
+hand-writes the task book, and manually dispatches it, that overhead is enough to make people just skip it —
+and then the salvageable part of a red result gets thrown away wholesale. **It should be a script.**
 
-直覺的做法是**給 pi bash、讓它自己跑測試**。不要那樣做，兩個理由：
+The intuitive approach is **give pi bash and let it run the tests itself.** Don't. Two reasons:
 
-1. 本文前面記著：給了 bash 之後它會用 `ls`／`cat` 繼續漫遊而不動手
-   （43 次 read／0 次 write／逾時）。那次實測是在「探索式寫測試」上量的，
-   換成「照表改一個點名的檔案」風險可能低得多——**但沒量過就不要賭**。
-   （2026-08-20 試過一次，10 分鐘逾時、0 次 write、0 次 bash 呼叫、檔案一字未動；
-   **但那次實驗被污染了**：它是在 29 份佇列還以寬度 8 跑的時候丟出去的，
-   是第 9 個併發請求，被前面 8 個餓死。所以那次不能當結論——只能說還沒有答案。）
-2. **它自報的「測試通過」不能信。** 同一個模型自己跑、自己判、自己回報，
-   三個環節都在它手上。外面跑一次的成本可以忽略。
+1. Earlier in this document: given bash, it will keep wandering with `ls`/`cat` instead of ever editing
+   (43 reads / 0 writes / timed out). That measurement was taken on "exploratory test writing" — the risk on
+   "edit exactly the named file per a table" might be much lower — **but it hasn't been measured, so don't bet on it.**
+   (Tried once on 2026-08-20: 10-minute timeout, 0 writes, 0 bash calls, file untouched by a single character;
+   **but that run was contaminated** — it was dispatched while a queue of 29 tasks was running at concurrency
+   width 8, as the 9th concurrent request, and got starved by the 8 ahead of it. So that run proves nothing —
+   it just means there's still no answer.)
+2. **Its self-reported "tests passed" cannot be trusted.** The same model runs it, judges it, and reports it —
+   all three steps are in its own hands. Running it once outside costs nothing worth mentioning.
 
-而下面這個形狀讓那個問題根本不必回答：**驗證在外面跑，修補交給 pi。**
+The following shape makes that question moot in the first place: **verification runs outside, the patching is pi's job.**
 
 ```bash
-# scripts/pi-verify-fix.sh <目標檔> <測試路徑...>
+# scripts/pi-verify-fix.sh <target-file> <test-paths...>
 for round in 1 2 3; do
   OUT="$(npx vitest run "${TESTS[@]}" 2>&1)"
   FAILS="$(printf '%s' "$OUT" | grep -E '^ *× |AssertionError|expected .* to ' | head -20)"
-  [ -z "$FAILS" ] && { echo "PASS（第 $round 輪）"; exit 0; }
-  [ "$round" -eq 3 ] && { echo "FAIL（兩輪修補後仍紅，交給人看）"; printf '%s\n' "$FAILS"; exit 1; }
+  [ -z "$FAILS" ] && { echo "PASS (round $round)"; exit 0; }
+  [ "$round" -eq 3 ] && { echo "FAIL (still red after two patch rounds, hand to a human)"; printf '%s\n' "$FAILS"; exit 1; }
 
   cat > "FIX-$NAME-$round.md" <<EOF
-# 任務
-\`$TARGET\` 剛改過，測試有失敗。修好它們。
+# Task
+\`$TARGET\` was just changed and tests are failing. Fix them.
 
-## 照順序做這三個動作
+## Do these three things, in order
 1. read \`$TARGET\`
 2. **edit \`$TARGET\`**
-3. 輸出 DONE
+3. output DONE
 
-## 失敗訊息
+## Failure messages
 \`\`\`
 $FAILS
 \`\`\`
 
-## 絕對不要做的事
-- **已經通過的測試一條都不要動。** 你看不到它們，任何「順手改一下」都是風險。
-- **不要改測試檔。** 測試說的是這個檔案該長什麼樣；紅了就是這個檔案錯了。
-- 不要新增失敗訊息沒有提到的任何東西。
-- 禁止讀 \`$TARGET\` 以外的任何檔案，禁止建立任何新檔案。
+## Absolutely do not
+- **Do not touch a single already-passing test.** You cannot see them; any "quick tidy" is a risk.
+- **Do not edit the test file.** The tests describe what this file should look like; if they're red, this file is wrong.
+- Do not add anything the failure messages didn't mention.
+- You are forbidden from reading any file other than \`$TARGET\`, and forbidden from creating any new file.
 EOF
   bash dispatch-pi.sh "FIX-$NAME-$round.md" "/tmp/fix-$NAME-$round.json" >/dev/null 2>&1
 done
 ```
 
-四個細節，每一個都對應一個踩過的坑：
+Four details, each one mapping to a pothole actually hit:
 
-- **只貼失敗的那幾行，不貼整份輸出。** 整份 vitest 輸出有幾百行堆疊追蹤，
-  那些會把它的注意力吃光——跟 `--no-context-files` 要擋的是同一件事。
-- **「不要改測試檔」要明文寫。** 最省事的過關方式就是把斷言改掉，而那會安靜地
-  通過所有檢查。（同理「不要改產品程式碼」，看任務性質選一句。）
-- **「已經通過的測試一條都不要動」要解釋為什麼**（「你看不到它們」）。
-  純禁令它會照做，但帶理由的禁令它照做得更穩。
-- **最多兩輪，然後交給人。** 修不好的通常不是機械問題——那正是第三層該看的。
+- **Paste only the failing lines, not the whole output.** A full vitest run's output has hundreds of lines of
+  stack trace, and that eats its attention whole — the same thing `--no-context-files` is meant to prevent.
+- **"Do not edit the test file" has to be written explicitly.** The path of least resistance to passing is
+  rewriting the assertion, and that will silently pass every check. (Same logic for "do not edit product code" —
+  pick whichever sentence fits the task.)
+- **"Do not touch a single already-passing test" needs its reason spelled out** ("you cannot see them"). A bare
+  prohibition it will follow, but a prohibition with a reason it follows more reliably.
+- **Two rounds max, then hand it to a human.** What doesn't get fixed by then usually isn't a mechanical problem —
+  that's exactly what the third layer is for.
 
-批次版本（`pi-verify-fix-all.sh`）多做一件事：**明確區分「通過」「仍紅」與
-「沒有測試可驗」**。第三類要列出來，不能算成驗過了——那幾個檔案的把關落在
-型別檢查、建置與人眼驗收上，而把它們混進「通過」那一堆是這一整套流程裡
-最容易騙到自己的地方。
+The batch version (`pi-verify-fix-all.sh`) does one more thing: **explicitly separates "passed," "still red," and
+"no tests to verify against."** The third category has to be listed out, not counted as verified — those files'
+gatekeeping falls entirely on type-checking, build, and human eyes, and lumping them into the "passed" pile is the
+easiest way this whole pipeline fools itself.
 
-**這一輪不要平行跑。** 不是因為 pi，是因為 vitest：同時開兩個 vitest 行程，
-這個 repo 紅的會從 4 條爆到 27 條（跨檔案的 `process.env` 干擾），判讀不了。
+**Don't run this round in parallel.** Not because of pi — because of vitest: running two vitest processes at once,
+red count in this repo jumps from 4 to 27 (`process.env` interference across files), and the result becomes unreadable.
 
-### 「逾時」不等於「什麼都沒做」——先看檔案動了沒有
+### "Timed out" doesn't mean "did nothing" — check whether the file moved first
 
-實測（2026-08-20，29 份轉換任務）：兩份撞到 `timeout 1500`，而它們的狀態**不一樣**：
+Measured (2026-08-20, a batch of 29 conversion tasks): two hit `timeout 1500`, and their states were **not the same**:
 
-| 任務 | 檔案狀態 | 處置 |
+| Task | File state | Handling |
 |---|---|---|
-| A | **未修改** | 乾淨，重做就好 |
-| B | **已修改** | **改了一半** |
+| A | **Unmodified** | Clean, just redo it |
+| B | **Modified** | **Half-edited** |
 
-改一半是逾時真正的危害。這一類編輯是兩步（加 utility ＋ 刪掉對應的 CSS 宣告），
-如果它刪了宣告但還沒加 utility 就被砍掉，**那個樣式靜靜地消失**——
-型別檢查過、建置過、測試過，只有量 computed style 或人眼才看得出來。
+Half-edited is what timeout actually endangers. This class of edit is two steps (add a utility + remove the
+matching CSS declaration); if it deleted the declaration but got cut off before adding the utility, **that style
+silently disappears** — type-check passes, build passes, tests pass, and only measuring computed style or a human
+eye catches it.
 
-所以逾時之後的第一個動作是 `git status -- <目標檔>`，不是重派。
-**已修改的一律先 `git checkout` 還原再重做**，不要在半成品上疊第二輪
-——第二輪看到的是一個「有些宣告已經不在了」的檔案，它會以為那些本來就不存在。
+So the first move after a timeout is `git status -- <target-file>`, not re-dispatching.
+**Anything already modified should always be `git checkout`-reverted before redoing it** — never stack a second
+round on top of a half-finished one. The second round sees a file with some declarations already gone and will
+assume they never existed.
 
-### 任務大小的界線不只是行數，還有「要產出多少字」
+### The size limit isn't just line count — it's also "how much has to be produced"
 
-本文前面的界線是**來源檔行數**（27–75 行順利、250 行要 5 分鐘、1044 行逾時），
-那條界線量的是「要讀進多少字才能開始動手」。
+The earlier limit in this document was about **source file line count** (27–75 lines went smoothly, 250 lines took
+5 minutes, 1044 lines timed out) — that limit measures "how many characters have to be read before it can start
+working."
 
-還有第二條，量的是**輸出**：那兩份逾時的任務，來源檔一個 149 行、一個 470 行，
-都遠在 700 行的界線之內——但它們要轉換的宣告種類是 36 與 **61** 種，
-而每一種都要改 markup 一處、刪 CSS 一行。輸出量爆掉了。
+There's a second limit, measuring **output**: those two timed-out tasks had source files of 149 and 470 lines —
+well inside the 700-line boundary — but the number of declaration types they had to convert was 36 and **61**,
+and each type meant editing one spot in the markup and deleting one line of CSS. The output volume blew the budget.
 
-**兩條界線都要看：輸入看行數，輸出看「要改幾處」。** 超過 30 處就切開，
-或者——如果那個轉換是確定性的——寫成腳本自己跑，那比切開更便宜也更可靠。
+**Watch both limits: input by line count, output by "how many spots need changing."** Past about 30 spots, split
+the task — or, if the transformation is deterministic, write it as a script instead, which is cheaper and more
+reliable than splitting.
 
-### 一次大型機械重構會讓「掃舊寫法」的守衛全部失效——而且是兩個方向
+### A large mechanical refactor breaks every guard that "scans for the old pattern" — in both directions
 
-（「確定性的轉換寫腳本、不要派工」那條在開頭的**判準零**，這裡不重複。）
+(The "write a script for a deterministic transformation, don't dispatch it" rule is criterion zero from the top of
+this document — not repeating it here.)
 
-這一節講的是**重構完之後**的事，而它比重構本身更容易被漏掉。
+This section is about what happens **after** the refactor, and it's more easily missed than the refactor itself.
 
-實例：一個 repo 有一條守衛叫「拿掉連結底線的檔案要在名冊上登記理由」。它的判斷方式
-是掃 CSS 找 `text-decoration: none`。重構把那些搬成了 markup 的 `no-underline`
-utility，於是：
+Example: a repo had a guard rule requiring "any file that removes a link's underline must be registered in a
+manifest with a reason." It detects this by scanning CSS for `text-decoration: none`. The refactor moved those
+into a `no-underline` markup utility, so:
 
-| 方向 | 症狀 |
+| Direction | Symptom |
 |---|---|
-| **漏抓** | 任何檔案只要改寫成 utility 就繞過了名冊——守衛還是綠的 |
-| **誤報** | 名冊上**正確的**條目被判成「已經沒有這回事」的過時條目 |
+| **Missed detection** | Any file rewritten to use the utility now slips past the manifest requirement entirely — the guard stays green |
+| **False positive** | **Correct** entries already in the manifest get judged as stale, "this no longer applies" |
 
-第二個方向是它被發現的原因（測試紅了）。**第一個方向不會有人發現**，而它才是那條
-守衛存在的理由。
+The second direction is the one that got discovered (a test went red). **The first direction would never have
+been noticed on its own**, and it's the entire reason that guard exists.
 
-同一輪還有三條測試因為同一件事紅掉，形狀都一樣——它們斷言的是**原始碼字串**：
+The same round had three more tests go red over the same underlying issue, all the same shape — they assert
+against **source-code strings**:
 
-    /<ul class="picks">/                 → class 屬性多了 utility 就不匹配
-    ruleOf(src, '.section')              → 那條規則整條不在了
-    ruleOf(src, '.body') 含 var(--font-mono) → 搬成 font-mono utility 了
+    /<ul class="picks">/                 → adding the utility to the class attribute breaks this match
+    ruleOf(src, '.section')              → that whole rule no longer exists
+    ruleOf(src, '.body') containing var(--font-mono) → moved into the font-mono utility
 
-**處置有兩種，選錯會養出壞習慣：**
+**There are two ways to handle this, and picking the wrong one grows a bad habit:**
 
-- ✅ **改成驗「意圖現在住的地方」**：讀渲染出來的 DOM，或讀 markup 的 class 清單。
-  `<ul class="picks">` 那條改成 `container.querySelector('ul.picks')` ＋
-  `querySelectorAll('ol')` 是 0 個——那才是「不會自動編號」這個意圖。
-- ❌ **把正則放寬到能過**。那會讓它以後被任何無關改動弄紅，而每次紅都訓練人再放寬一次。
+- ✅ **Rewrite it to check "where the intent now lives"**: read the rendered DOM, or read the markup's class list.
+  `<ul class="picks">` becomes `container.querySelector('ul.picks')` plus `querySelectorAll('ol')` returning 0 —
+  that's the actual intent, "this must not auto-number."
+- ❌ **Loosen the regex until it passes.** That leaves it able to go red from any unrelated change from then on,
+  and every time it goes red someone loosens it again.
 
-**而如果一條守衛有「掃描」與「回頭檢查名冊」兩個使用點，那個判斷要抽成一個函式**，
-讓它同時認得新舊兩種寫法。分開寫就會只修一邊——修的是誤報那一邊（因為它會紅），
-漏抓那一邊繼續沉默。
+**And if a guard has two use sites — "scan" and "cross-check the manifest" — that decision logic has to be
+factored into one function**, so it recognizes both the old and new pattern at both sites. Writing it twice means
+only one side gets fixed — the false-positive side (because it goes red), while the missed-detection side stays silent.
 
-### 派工刪掉一段註解的時候，裡面可能有還活著的理由
+### When a dispatch deletes a comment, something still alive might be in it
 
-大型重構會刪掉大量「描述已經不存在的東西」的註解，這是對的。但同一段註解裡常常
-**混著一條還活著的警告**，而小模型（跟趕時間的自己）會整段刪掉。
+Large refactors correctly delete a lot of comments that "describe something that no longer exists." But the same
+comment block often has **a still-live warning mixed in**, and a small model (like a rushed human) will delete the
+whole block.
 
-實例：一段講「每一種節點的色相 token」的說明，前半描述的 CSS 已經除役了，
-但後半是一句還活著的警告——「三處各寫一份的結果是『圖例上的起點是綠的、
-minimap 上的起點是灰的』」。那句話講的是**現在仍然存在的**兩份來源
-（CSS 沒辦法 import TS 常數）。
+Example: a comment block explaining "the hue token for each node type" — the first half described CSS that had
+since been retired, but the second half was a still-live warning: "having this written in three separate places
+means the legend's starting point is green while the minimap's is grey." That sentence describes **two sources
+that still exist today** (CSS can't import TS constants).
 
-**收尾的動作不是把那句話搬到別的註解裡，是把它換成會紅的東西。** 一條測試斷言
-CSS 裡的 `stroke` 等於那個 TS 常數，證偽過（改成別的值會紅）。註解會再一次
-跟著下一輪重構消失，測試不會。
+**The right cleanup move isn't to relocate that sentence into another comment — it's to turn it into something
+that goes red.** A test now asserts that the `stroke` in the CSS equals that TS constant, falsified (change it to
+a different value and it goes red). The comment will vanish again in the next refactor; the test won't.
 
-審查清單加一行：**這一輪刪掉的註解裡，有沒有哪一句講的是現在還成立的事？**
+Add a line to the review checklist: **among the comments deleted this round, is there one describing something
+that's still true?**
 
-### 同一條判準寫兩次，就一定會有一次寫錯
+### Writing the same criterion twice guarantees one of them is wrong
 
-上面那個生成器缺陷的根因值得單獨記：**「哪些選擇器可以轉」這條判準我寫了兩次**
-——一次在派工任務書的生成器裡，一次在確定性腳本裡。腳本那份從一開始就對
-（只收單一 class），生成器那份漏了偽類與複合選擇器。
+The root cause behind that generator defect above is worth recording on its own: **the criterion "which selectors
+are convertible" was written twice** — once in the task-book generator, once in the deterministic script. The
+script's version was correct from the start (single class only); the generator's version missed pseudo-classes
+and compound selectors.
 
-**兩份不同步的判準比一份錯的更難查**，因為兩邊各自看起來都合理。
-一旦你同時有「派工路線」與「腳本路線」，那條共用的判準要抽成**一份**
-（同一個模組、同一個函式），並且用測試咬著兩邊一致。
+**Two out-of-sync criteria are harder to catch than one wrong one**, because each side looks reasonable on its
+own. Once you have both a "dispatch route" and a "script route," the criterion they share has to be factored into
+**one place** (one module, one function), with a test holding both sides in sync.
 
-**而同一輪裡這件事發生了第二次**，所以規則要比上面那句更強。
+**And this same thing happened a second time in the same round**, so the rule needs to be stronger than the
+sentence above.
 
-第二次在那支確定性腳本**自己內部**：它要「找出帶某個 class 的元素」。
-計數用的是精確 token 比對（對的），寫入用的是一個帶 word-boundary 的正則——
-而 **word boundary 在連字號處成立**，所以找 `body` 的時候命中了
-`class="warn-body"`。後果是 `.body` 的樣式被寫到 `.warn-body` 那個元素上：
-兩個元素的樣式互換了一半，而型別檢查、建置、單元測試**全部會過**
-（class 字串完全合法，只是掛錯地方）。
+The second instance was **inside the deterministic script itself**: it needed to "find elements carrying a given
+class." Counting used exact token matching (correct); writing used a word-boundary regex — and **word boundary
+holds at a hyphen**, so searching for `body` also matched `class="warn-body"`. The result: `.body`'s styles got
+written onto the `.warn-body` element — the two elements' styles half swapped, and type-check, build, and unit
+tests **all passed** (the class string is perfectly legal, just attached to the wrong element).
 
-**規則：只要一個判準有兩個使用點，就抽成一個函式。沒有例外，也不看它有多短。**
-「一行正則而已」正是它會被寫第二次、而且第二次寫錯的原因。
+**Rule: the moment a criterion has two use sites, factor it into one function. No exceptions, no matter how short
+it is.** "It's just a one-line regex" is exactly why it gets written a second time — and gets it wrong the second time.
 
-那次是怎麼被抓到的：追一條失敗測試的時候，順手比對了 `git show HEAD:<檔案>`
-裡那條規則原本有什麼——發現 `.warn-body` 在 HEAD 只有三條宣告，現在卻掛著
-六個不屬於它的 utility。**「跟 HEAD 比一比」是這一類錯的通用照妖鏡**，
-因為它問的是「有沒有東西跑到不該去的地方」，而那是所有自動檢查都不問的問題。
+How that one got caught: while tracking down a failing test, comparing against `git show HEAD:<file>` for what
+that rule originally had turned up that `.warn-body` had only three declarations at HEAD and was now carrying six
+utilities that didn't belong to it. **"Diff against HEAD" is the general-purpose x-ray for this whole class of
+bug**, because it asks "did anything land somewhere it shouldn't have" — the one question none of the automated
+checks ever ask.
 
-### 模型停不下來探索？把工具收掉，不要用講的
+### A model that won't stop exploring? Take the tools away, don't just tell it
 
-有些模型會強迫性地探索：任務書白紙黑字寫「禁止 glob、禁止 grep」，它照樣 36 次 read、
-6 次 glob、4 次 grep、**0 次 write**。用 `--tools` 把 glob/grep 拿掉之後它**繞道**——
-改用 bash 的 `ls`／`cat` 繼續找，104 次 bash、依然 0 次 write。
+Some models explore compulsively: the task book states in plain writing "no glob, no grep," and it still does
+36 reads, 6 globs, 4 greps, **0 writes**. Take glob/grep away via `--tools` and it **routes around it** — switches
+to bash's `ls`/`cat` and keeps searching, 104 bash calls, still 0 writes.
 
-有效的做法是**只給 read 和 write**，連 bash 都不給：
+What works is **giving it only read and write**, not even bash:
 
 ```bash
 omp -p "..." --tools read,write --thinking off ...
 ```
 
-同一個模型、同一個任務，立刻產出 190 行、9 條測試。
+Same model, same task, and it immediately produces 190 lines and 9 tests.
 
-這需要把「跑測試」從 agent 手上拿走，交給 driver——但**那本來就該是 driver 的事**
-（見上面「驗證要在模型外面做」），所以不是妥協，是把職責放回正確的地方。代價是
-agent 沒辦法自我驗證，交出來的東西紅的比例較高（實測 9 條裡 5 條紅），由修補回合接手。
+This requires taking "run the tests" away from the agent and handing it to the driver — but **that was always the
+driver's job** (see "verification happens outside the model" above), so this isn't a compromise, it's putting the
+responsibility back where it belongs. The cost is the agent can't self-verify, and what it hands back is redder
+than before (measured: 5 of 9 red), picked up by the patch round.
 
-**通則：模型不聽話的時候，改變它的能力，不要加強措辭。** 禁令對「行為形狀錯誤」
-沒有約束力，拿掉工具有。
+**General rule: when a model won't listen, change what it's capable of, don't strengthen the wording.**
+Prohibitions have no grip on "behaviour shaped wrong"; taking away the tool does.
 
-### 失敗不要整份丟掉——加一個修補回合
+### Don't throw away a whole failed run — add a patch round
 
-**全有全無的判定會把大部分價值扔掉。** 實測有一支產出是 16 條測試裡 **13 條通過**，
-卻因為 3 條紅的被判定失敗、整份作廢。那不是「成功率 50%」，是把 80% 的成果丟進垃圾桶。
+**An all-or-nothing verdict throws away most of the value.** Measured: one output had **13 of 16** tests passing,
+and got judged a failure and discarded whole because 3 were red. That's not "50% success rate" — that's throwing
+80% of the result in the trash.
 
-失敗的那幾條通常是小模型對環境的錯誤假設（沒等 promise、猜錯物件形狀），**修比重寫容易
-得多**。所以驗證失敗時追加一輪：
+The tests that fail are usually a small model's wrong assumption about the environment (didn't await a promise,
+guessed the wrong object shape), and **fixing is much cheaper than rewriting.** So when verification fails, add
+one more round:
 
 ```
-# 修補任務
-<測試檔> 裡有幾條失敗。修好它們，或把修不好的那幾條整條刪掉。
+# Patch task
+Some tests in <test-file> are failing. Fix them, or delete outright any that can't be fixed.
 
-## 絕對不要動
-- 已經通過的測試一條都不要改。
-- 產品程式碼一行都不要改。測試的假設錯了就改測試，不是改程式。
+## Absolutely do not touch
+- Do not change a single already-passing test.
+- Do not change a single line of product code. If a test's assumption is wrong, fix the test, not the code.
 
-## 失敗訊息
-<只貼失敗那幾行，不要貼整份輸出>
+## Failure messages
+<paste only the failing lines, not the whole output>
 ```
 
-「不要改產品程式碼」這條在修補回合**特別重要**：小模型最省事的過關方式就是改壞受測程式
-去迎合測試，而那會安靜地通過所有檢查。
+"Do not touch product code" matters **especially** in the patch round: the small model's path of least resistance
+is to break the code under test to suit the test, and that will silently pass every check.
 
-產出一律當**草稿**收：小模型會挑著遵守指令（實測：測試邏輯完全正確，但明確要求的
-繁體中文註解直接無視）。合併前要人看過。
+Always treat the output as a **draft**: a small model follows instructions selectively (measured: the test logic
+was entirely correct, but the explicitly required Traditional Chinese comments were simply ignored). Have a human
+look before merging.
