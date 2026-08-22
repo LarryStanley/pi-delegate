@@ -5,6 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildPiArgs, dispatch } from "../src/dispatch.mjs";
 import { formatVerdict } from "../src/verdict.mjs";
+import { DEFAULTS } from "../src/config.mjs";
+
+// 測試一律自己帶 config 與 piDefaults，絕不讓結果取決於這台機器上剛好存在的
+// ~/.claude/pi-delegate/config.json 或 ~/.pi/agent/settings.json。
+const CONFIG = { ...DEFAULTS, drafter_patterns: [...DEFAULTS.drafter_patterns] };
+const NO_PI_DEFAULTS = { provider: null, model: null };
 
 // NOTE (deviation from task-6-brief.md): the brief places this fixture at
 // test/fixtures/fake-pi.mjs. Node's `node --test` (bare, per package.json)
@@ -24,37 +30,118 @@ function tmpTask(body = "改 a.ts") {
   return { dir, file };
 }
 
-test("buildPiArgs 帶上必要旗標", () => {
-  const args = buildPiArgs({ model: "M", sessionId: "s1" });
+// --- 結構性旗標：固定不變 ---
+
+test("buildPiArgs 帶上結構性旗標", () => {
+  const args = buildPiArgs({ sessionId: "s1", config: CONFIG, piDefaults: NO_PI_DEFAULTS });
   assert.ok(args.includes("--mode") && args.includes("rpc"));
-  assert.ok(args.includes("--provider") && args.includes("omlx"));
-  assert.ok(args.includes("--model") && args.includes("M"));
-  assert.ok(args.includes("--thinking") && args.includes("off"));
-  assert.ok(args.includes("--tools") && args.includes("read,write,edit"));
-  assert.ok(args.includes("--no-context-files"));
+  assert.ok(args.includes("--session-id") && args.includes("s1"));
   assert.ok(args.includes("--no-skills"));
   assert.ok(args.includes("--no-extensions"));
-  assert.ok(args.includes("--session-id") && args.includes("s1"));
 });
 
 test("buildPiArgs 不得帶 --cwd（pi 沒有這個旗標）", () => {
-  assert.ok(!buildPiArgs({ model: "M", sessionId: "s" }).includes("--cwd"));
+  assert.ok(!buildPiArgs({ sessionId: "s", config: CONFIG, piDefaults: NO_PI_DEFAULTS }).includes("--cwd"));
 });
 
 test("buildPiArgs 不得帶 --no-session（會讓 drill-down 無資料）", () => {
-  assert.ok(!buildPiArgs({ model: "M", sessionId: "s" }).includes("--no-session"));
+  assert.ok(!buildPiArgs({ sessionId: "s", config: CONFIG, piDefaults: NO_PI_DEFAULTS }).includes("--no-session"));
 });
 
-test("不給 bash 工具", () => {
-  const args = buildPiArgs({ model: "M", sessionId: "s" });
+// --- provider / model：沒設定就整個不帶，交給 pi 自己解析 ---
+//
+// 這是整輪 provider-agnostic 改動的回歸守門。pi 的 findInitialModel
+// （dist/core/model-resolver.js:423-476）在沒有 CLI 旗標時會用
+// ~/.pi/agent/settings.json 的 defaultProvider / defaultModel —— 也就是使用者
+// 本來就在用的那個模型。外掛自己發明一個預設模型，就是把別人的設定蓋掉。
+test("沒有 config、沒有參數時，不帶 --provider 也不帶 --model", () => {
+  const args = buildPiArgs({ sessionId: "s", config: DEFAULTS, piDefaults: NO_PI_DEFAULTS });
+  assert.ok(!args.includes("--provider"), `不該有 --provider：${args.join(" ")}`);
+  assert.ok(!args.includes("--model"), `不該有 --model：${args.join(" ")}`);
+  assert.ok(!args.join(" ").includes("omlx"));
+  assert.ok(!args.join(" ").includes("Qwen"));
+});
+
+test("config 指定 provider / model 時兩個旗標都出現", () => {
+  const config = { ...DEFAULTS, provider: "anthropic", model: "claude-sonnet-4-6" };
+  const args = buildPiArgs({ sessionId: "s", config, piDefaults: NO_PI_DEFAULTS });
+  assert.equal(args[args.indexOf("--provider") + 1], "anthropic");
+  assert.equal(args[args.indexOf("--model") + 1], "claude-sonnet-4-6");
+});
+
+test("呼叫參數覆寫 config 的 provider / model", () => {
+  const config = { ...DEFAULTS, provider: "anthropic", model: "claude-sonnet-4-6" };
+  const args = buildPiArgs({ sessionId: "s", config, piDefaults: NO_PI_DEFAULTS, provider: "ollama", model: "qwen3:8b" });
+  assert.equal(args[args.indexOf("--provider") + 1], "ollama");
+  assert.equal(args[args.indexOf("--model") + 1], "qwen3:8b");
+});
+
+// pi 只在 provider 與 model **同時**存在時才採用命令列的選擇
+// （model-resolver.js:428），單獨一個會被靜默忽略 —— 所以要嘛成對出現、要嘛都不出現。
+test("只指定 model 時，provider 由 pi 的預設補齊，兩個旗標成對出現", () => {
+  const args = buildPiArgs({
+    sessionId: "s", config: DEFAULTS, model: "some-model",
+    piDefaults: { provider: "litellm", model: "other" },
+  });
+  assert.equal(args[args.indexOf("--provider") + 1], "litellm");
+  assert.equal(args[args.indexOf("--model") + 1], "some-model");
+});
+
+// --- 量出來的預設：可覆寫，而且覆寫真的要進到 args 裡 ---
+
+test("預設不給 bash 工具", () => {
+  const args = buildPiArgs({ sessionId: "s", config: CONFIG, piDefaults: NO_PI_DEFAULTS });
   const tools = args[args.indexOf("--tools") + 1];
+  assert.equal(tools, "read,write,edit");
   assert.ok(!tools.split(",").includes("bash"));
+});
+
+// schema 收了一個覆寫、buildPiArgs 卻默默丟掉，正是這個 codebase 踩過五次的那種
+// 「自己跟自己一致、對現實是錯的」缺陷。這個測試盯的就是那條路。
+test("覆寫 tools 加上 bash 時，真的會出現在 args 裡", () => {
+  const args = buildPiArgs({ sessionId: "s", config: CONFIG, piDefaults: NO_PI_DEFAULTS, tools: "read,write,edit,bash" });
+  assert.equal(args[args.indexOf("--tools") + 1], "read,write,edit,bash");
+});
+
+test("thinking 預設 off，可以覆寫成其他等級", () => {
+  const off = buildPiArgs({ sessionId: "s", config: CONFIG, piDefaults: NO_PI_DEFAULTS });
+  assert.equal(off[off.indexOf("--thinking") + 1], "off");
+  const high = buildPiArgs({ sessionId: "s", config: CONFIG, piDefaults: NO_PI_DEFAULTS, thinking: "high" });
+  assert.equal(high[high.indexOf("--thinking") + 1], "high");
+});
+
+test("thinking 設成 null 時整個不帶 --thinking", () => {
+  const args = buildPiArgs({ sessionId: "s", config: CONFIG, piDefaults: NO_PI_DEFAULTS, thinking: null });
+  assert.ok(!args.includes("--thinking"));
+});
+
+// pi 對不合法的 --thinking 值只印一句 warning 就丟掉（dist/cli/args.js:96-105）。
+// 靜默忽略一個被明確指定的覆寫，就是這一輪要避免的失敗形狀。
+test("不合法的 thinking 等級直接拋錯，不送給 pi 讓它靜默忽略", () => {
+  assert.throws(
+    () => buildPiArgs({ sessionId: "s", config: CONFIG, piDefaults: NO_PI_DEFAULTS, thinking: "maximum" }),
+    /thinking/,
+  );
+});
+
+test("no_context_files 預設帶旗標，覆寫成 false 就不帶", () => {
+  const on = buildPiArgs({ sessionId: "s", config: CONFIG, piDefaults: NO_PI_DEFAULTS });
+  assert.ok(on.includes("--no-context-files"));
+  const off = buildPiArgs({ sessionId: "s", config: CONFIG, piDefaults: NO_PI_DEFAULTS, noContextFiles: false });
+  assert.ok(!off.includes("--no-context-files"));
+});
+
+test("append_system_prompt 預設不帶，給了就帶", () => {
+  const none = buildPiArgs({ sessionId: "s", config: CONFIG, piDefaults: NO_PI_DEFAULTS });
+  assert.ok(!none.includes("--append-system-prompt"));
+  const appended = buildPiArgs({ sessionId: "s", config: CONFIG, piDefaults: NO_PI_DEFAULTS, appendSystemPrompt: "只准改指定的檔案" });
+  assert.equal(appended[appended.indexOf("--append-system-prompt") + 1], "只准改指定的檔案");
 });
 
 test("正常結束回傳 completed 判決", async () => {
   const { dir, file } = tmpTask();
   const { done } = await dispatch({
-    taskFile: file, cwd: dir, model: "M", timeoutS: 10,
+    taskFile: file, cwd: dir, config: CONFIG, piDefaults: NO_PI_DEFAULTS, timeoutS: 10,
     sessionId: "s1", piCommand: FAKE_PI, gitDiffStat: "",
   });
   const verdict = await done;
@@ -65,7 +152,7 @@ test("正常結束回傳 completed 判決", async () => {
 test("逾時回傳 timeout 判決且仍附 git_diff_stat", async () => {
   const { dir, file } = tmpTask();
   const { done } = await dispatch({
-    taskFile: file, cwd: dir, model: "M", timeoutS: 1,
+    taskFile: file, cwd: dir, config: CONFIG, piDefaults: NO_PI_DEFAULTS, timeoutS: 1,
     sessionId: "s2", piCommand: [...FAKE_PI, "--hang"],
     gitDiffStat: "1 file changed",
   });
@@ -77,7 +164,7 @@ test("逾時回傳 timeout 判決且仍附 git_diff_stat", async () => {
 test("abort 回傳 aborted 判決", async () => {
   const { dir, file } = tmpTask();
   const { handle, done } = await dispatch({
-    taskFile: file, cwd: dir, model: "M", timeoutS: 30,
+    taskFile: file, cwd: dir, config: CONFIG, piDefaults: NO_PI_DEFAULTS, timeoutS: 30,
     sessionId: "s3", piCommand: [...FAKE_PI, "--hang"], gitDiffStat: "",
   });
   await handle.abort();
@@ -87,7 +174,7 @@ test("abort 回傳 aborted 判決", async () => {
 test("write 事件反映在判決的 write_count", async () => {
   const { dir, file } = tmpTask();
   const { done } = await dispatch({
-    taskFile: file, cwd: dir, model: "M", timeoutS: 10,
+    taskFile: file, cwd: dir, config: CONFIG, piDefaults: NO_PI_DEFAULTS, timeoutS: 10,
     sessionId: "s4", piCommand: [...FAKE_PI, "--write=a.ts,b.ts"], gitDiffStat: "",
   });
   const verdict = await done;
@@ -98,7 +185,7 @@ test("write 事件反映在判決的 write_count", async () => {
 test("steer 會把訊息送進子行程的 stdin", async () => {
   const { dir, file } = tmpTask();
   const { handle, done } = await dispatch({
-    taskFile: file, cwd: dir, model: "M", timeoutS: 10,
+    taskFile: file, cwd: dir, config: CONFIG, piDefaults: NO_PI_DEFAULTS, timeoutS: 10,
     sessionId: "s5", piCommand: [...FAKE_PI, "--echo-steer"], gitDiffStat: "",
   });
   await handle.steer("往左一點");
@@ -111,7 +198,7 @@ test("agent_end 之後子行程仍存活（真實 pi RPC 行為）也要在遠�
   const timeoutS = 15;
   const startedAt = Date.now();
   const { done } = await dispatch({
-    taskFile: file, cwd: dir, model: "M", timeoutS,
+    taskFile: file, cwd: dir, config: CONFIG, piDefaults: NO_PI_DEFAULTS, timeoutS,
     sessionId: "s7", piCommand: [...FAKE_PI, "--stay-alive"], gitDiffStat: "",
   });
   const verdict = await done;
@@ -153,7 +240,7 @@ test("abort() 在終局事件已經 settle 之後呼叫，settled 互斥閘門�
   const logDir = mkdtempSync(join(tmpdir(), "pi-sigterm-"));
   const sigtermLog = join(logDir, "sigterm.log");
   const { handle, done } = await dispatch({
-    taskFile: file, cwd: dir, model: "M", timeoutS: 15,
+    taskFile: file, cwd: dir, config: CONFIG, piDefaults: NO_PI_DEFAULTS, timeoutS: 15,
     sessionId: "s8",
     piCommand: [...FAKE_PI, "--stay-alive", `--sigterm-log=${sigtermLog}`],
     gitDiffStat: "",
@@ -185,7 +272,7 @@ test("abort() 在終局事件已經 settle 之後呼叫，settled 互斥閘門�
 test("子行程忽略 SIGTERM 時，逾時仍靠 SIGKILL escalation 結束並回傳 timeout", async () => {
   const { dir, file } = tmpTask();
   const { done } = await dispatch({
-    taskFile: file, cwd: dir, model: "M", timeoutS: 1,
+    taskFile: file, cwd: dir, config: CONFIG, piDefaults: NO_PI_DEFAULTS, timeoutS: 1,
     sessionId: "s6", piCommand: [...FAKE_PI, "--ignore-sigterm"], gitDiffStat: "",
   });
   const verdict = await done;
@@ -198,7 +285,7 @@ test("gitDiffStat 是 thunk 時，在 settle 當下才求值（不是 spawn 當�
   const { dir, file } = tmpTask();
   let stat = "spawn 當下（乾淨的工作樹）";
   const { done } = await dispatch({
-    taskFile: file, cwd: dir, model: "M", timeoutS: 1,
+    taskFile: file, cwd: dir, config: CONFIG, piDefaults: NO_PI_DEFAULTS, timeoutS: 1,
     sessionId: "g1", piCommand: [...FAKE_PI, "--hang"],
     gitDiffStat: () => stat,
   });
@@ -216,7 +303,7 @@ test("gitDiffStat 是 thunk 時，在 settle 當下才求值（不是 spawn 當�
 test("gitDiffStat 傳字串時照舊原樣帶進判決", async () => {
   const { dir, file } = tmpTask();
   const { done } = await dispatch({
-    taskFile: file, cwd: dir, model: "M", timeoutS: 10,
+    taskFile: file, cwd: dir, config: CONFIG, piDefaults: NO_PI_DEFAULTS, timeoutS: 10,
     sessionId: "g2", piCommand: FAKE_PI, gitDiffStat: "2 files changed",
   });
   assert.equal((await done).git_diff_stat, "2 files changed");
@@ -224,12 +311,12 @@ test("gitDiffStat 傳字串時照舊原樣帶進判決", async () => {
 
 // --- [I2] pi 回報終局失敗時要立刻收尾，不要拖滿 timeout ---
 
-test("response success:false（omlx 掛了）立刻判 failed 並附上錯誤字串", async () => {
+test("response success:false（推論伺服器掛了）立刻判 failed 並附上錯誤字串", async () => {
   const { dir, file } = tmpTask();
   const timeoutS = 20;
   const startedAt = Date.now();
   const { done } = await dispatch({
-    taskFile: file, cwd: dir, model: "M", timeoutS,
+    taskFile: file, cwd: dir, config: CONFIG, piDefaults: NO_PI_DEFAULTS, timeoutS,
     sessionId: "f1", piCommand: [...FAKE_PI, "--api-error"], gitDiffStat: "",
   });
   const verdict = await done;
@@ -247,7 +334,7 @@ test("response success:false（omlx 掛了）立刻判 failed 並附上錯誤字
 test("pi 不在 PATH 上時，判決是 failed 而且帶得出 stderr 線索", async () => {
   const { dir, file } = tmpTask();
   const { done } = await dispatch({
-    taskFile: file, cwd: dir, model: "M", timeoutS: 10,
+    taskFile: file, cwd: dir, config: CONFIG, piDefaults: NO_PI_DEFAULTS, timeoutS: 10,
     sessionId: "e1", piCommand: ["pi-definitely-not-on-path"], gitDiffStat: "",
   });
   const verdict = await done;
@@ -267,7 +354,7 @@ test("終局事件比 timeout 晚到時，不會再送第二次 SIGTERM", async 
   // timeout 在 1s 觸發（SIGTERM #1，被子行程吃掉），agent_end 在 1.5s 才到。
   // 沒有閘門的話那個遲到的事件會呼叫 killWithEscalation() → SIGTERM #2。
   const { done } = await dispatch({
-    taskFile: file, cwd: dir, model: "M", timeoutS: 1,
+    taskFile: file, cwd: dir, config: CONFIG, piDefaults: NO_PI_DEFAULTS, timeoutS: 1,
     sessionId: "t1",
     piCommand: [...FAKE_PI, "--ignore-sigterm", "--late-agent-end=1500", `--sigterm-log=${sigtermLog}`],
     gitDiffStat: "",
@@ -291,7 +378,7 @@ test("終局事件比 timeout 晚到時，不會再送第二次 SIGTERM", async 
 test("判決的 tokens 由事件流裡的 message.usage 算出，不是 0/0", async () => {
   const { dir, file } = tmpTask();
   const { done } = await dispatch({
-    taskFile: file, cwd: dir, model: "M", timeoutS: 10,
+    taskFile: file, cwd: dir, config: CONFIG, piDefaults: NO_PI_DEFAULTS, timeoutS: 10,
     sessionId: "u1", piCommand: FAKE_PI, gitDiffStat: "",
   });
   assert.deepEqual((await done).tokens, { input: 10, output: 5 });
@@ -302,7 +389,7 @@ test("判決的 tokens 由事件流裡的 message.usage 算出，不是 0/0", as
 test("model id 打錯（stopReason=error）判 failed 而不是 0 秒的假 completed", async () => {
   const { dir, file } = tmpTask();
   const { done } = await dispatch({
-    taskFile: file, cwd: dir, model: "M", timeoutS: 20,
+    taskFile: file, cwd: dir, config: CONFIG, piDefaults: NO_PI_DEFAULTS, timeoutS: 20,
     sessionId: "m1", piCommand: [...FAKE_PI, "--model-error"], gitDiffStat: "",
   });
   const verdict = await done;
@@ -313,7 +400,7 @@ test("model id 打錯（stopReason=error）判 failed 而不是 0 秒的假 comp
 test("agent_end 帶 willRetry:true 時不收尾，等 pi 重試完的那個終局事件", async () => {
   const { dir, file } = tmpTask();
   const { done } = await dispatch({
-    taskFile: file, cwd: dir, model: "M", timeoutS: 20,
+    taskFile: file, cwd: dir, config: CONFIG, piDefaults: NO_PI_DEFAULTS, timeoutS: 20,
     sessionId: "r1", piCommand: [...FAKE_PI, "--retry-then-end"], gitDiffStat: "",
   });
   const verdict = await done;

@@ -172,7 +172,7 @@ function runDoctorCheck({ cwd, home }) {
   });
 }
 
-test("doctor-check: 模式公告與問題清單包在 hookSpecificOutput/SessionStart 裡", () => {
+test("doctor-check: 模式公告與派工目標包在 hookSpecificOutput/SessionStart 裡", () => {
   const project = tmpProject();
   const home = tmpHome();
   setMode(project, "strict", stateFileFor(home));
@@ -184,8 +184,43 @@ test("doctor-check: 模式公告與問題清單包在 hookSpecificOutput/Session
   assert.equal(out.additionalContext, undefined, "additionalContext 不能放在頂層");
   assert.equal(out.hookSpecificOutput.hookEventName, "SessionStart");
   assert.match(out.hookSpecificOutput.additionalContext, /pi-delegate 模式：strict/);
-  // 這個 tmp HOME 底下沒有 ~/.pi/agent/models.json，所以一定會有 provider-missing
-  assert.match(out.hookSpecificOutput.additionalContext, /provider-missing/);
+  assert.match(out.hookSpecificOutput.additionalContext, /派工目標/);
+});
+
+// 這個 tmp HOME 底下什麼設定都沒有 —— 那是**正常狀態**（派工會用 pi 自己的預設
+// 模型），不是一堆待修的問題。舊版在這個情境會噴 provider-missing / model-missing，
+// 也就是對每一個剛裝好外掛的人在每次 SessionStart 噴紅字。
+test("doctor-check: 完全沒有設定時不報任何問題", () => {
+  const project = tmpProject();
+  const home = tmpHome();
+  setMode(project, "soft", stateFileFor(home));
+
+  const result = runDoctorCheck({ cwd: project, home });
+
+  assert.equal(result.status, 0);
+  const context = JSON.parse(result.stdout).hookSpecificOutput.additionalContext;
+  assert.ok(!context.includes("⚠️"), `不該有警告：${context}`);
+  assert.ok(!context.includes("provider-missing"));
+});
+
+// 使用者的 pi 已經設好 defaultProvider / defaultModel（絕大多數人的狀態）——
+// 這時 doctor 要如實回報「派工會打到誰」，而不是要求他再設定一次。
+test("doctor-check: 回報 pi 自己的預設模型當作派工目標", () => {
+  const project = tmpProject();
+  const home = tmpHome();
+  setMode(project, "soft", stateFileFor(home));
+  mkdirSync(join(home, ".pi", "agent"), { recursive: true });
+  writeFileSync(
+    join(home, ".pi", "agent", "settings.json"),
+    JSON.stringify({ defaultProvider: "anthropic", defaultModel: "claude-sonnet-4-6" }),
+  );
+
+  const result = runDoctorCheck({ cwd: project, home });
+
+  assert.equal(result.status, 0);
+  const context = JSON.parse(result.stdout).hookSpecificOutput.additionalContext;
+  assert.match(context, /anthropic \/ claude-sonnet-4-6/);
+  assert.ok(!context.includes("⚠️"), `託管 provider 不該有任何警告：${context}`);
 });
 
 test("doctor-check: models.json 壞掉時降級成警告，不是讓 hook 掛掉", () => {

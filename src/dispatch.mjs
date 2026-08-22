@@ -3,9 +3,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, resolve as resolvePath } from "node:path";
 import { createJsonlSplitter } from "./jsonl.mjs";
 import { computeVerdict, isTerminalEvent } from "./verdict.mjs";
+import { loadConfig, loadPiDefaults, resolveModelSelection, THINKING_LEVELS } from "./config.mjs";
 
-export const DEFAULT_MODEL = "Qwen3.8-27B-oQ4e-mtp";
-export const DEFAULT_TIMEOUT_S = 1500;
+export { DEFAULT_TIMEOUT_S } from "./config.mjs";
 const KILL_GRACE_MS = 2000;
 
 // 判定「終局事件」用同一份 verdict.mjs 的 isTerminalEvent() ——
@@ -13,22 +13,62 @@ const KILL_GRACE_MS = 2000;
 // 事件名稱，否則兩邊一邊認一邊不認，就會重新出現本輪要修的那個 bug
 // class（settle 訊號跟判決訊號對不上）。
 
-// 旗標理由見 spec §6。不給 bash（給了會漫遊不動手）；--no-context-files 是
-// 必要不是最佳化（實測：沒加 = 43 read / 0 write / 逾時；加了 = 93 秒完成）。
+// 旗標分兩類，別把它們混為一談：
+//
+// **結構性**（固定，不開放覆寫）：`--mode rpc`（這個外掛就是靠 rpc 的雙向通道做
+// steer / abort）、`--session-id`（判決要對得上 session）、`--no-skills`、
+// `--no-extensions`（別把使用者的整套 pi 環境灌進一次派工），以及**刻意不帶**
+// `--no-session`（不帶才會落地 session，drill-down 讀得到）。
 // 注意：pi 沒有 --cwd，工作目錄靠 spawn 的 options.cwd。
-// 注意：刻意不帶 --no-session，否則 session 不落地，drill-down 讀不到。
-export function buildPiArgs({ model, sessionId }) {
-  return [
-    "--mode", "rpc",
-    "--provider", "omlx",
-    "--model", model,
-    "--thinking", "off",
-    "--tools", "read,write,edit",
-    "--session-id", sessionId,
-    "--no-context-files",
-    "--no-skills",
-    "--no-extensions",
-  ];
+//
+// **量出來的預設**（可覆寫，理由寫在 server.mjs 的 tool 說明裡給呼叫端看）：
+//   --thinking off       小模型會把 budget 全花在思考上、一次 tool call 都不發；
+//                        但強的託管模型在難題上開 thinking 是有幫助的。
+//   --tools read,write,edit  給了 bash 會變成一直 ls/cat 漫遊而不動手。
+//   --no-context-files   實測：沒加 = 43 read / 0 write / 逾時；加了 = 93 秒完成。
+// 三個都用 null 表示「不要帶這個旗標，讓 pi 自己決定」。
+//
+// provider / model 走三層解析（呼叫參數 → config.json → pi 自己的預設）。
+// **兩邊都沒有時就整個不帶旗標**，pi 會用 ~/.pi/agent/settings.json 的
+// defaultProvider / defaultModel —— 也就是使用者本來就在用的那個模型。
+// 這是預設路徑：不設定任何東西，這個外掛也能對 anthropic / openai / ollama /
+// 本機伺服器（例如 omlx 或 LM Studio）正常運作。
+export function buildPiArgs({
+  sessionId,
+  config = loadConfig(),
+  piDefaults = loadPiDefaults(),
+  provider,
+  model,
+  thinking,
+  tools,
+  noContextFiles,
+  appendSystemPrompt,
+}) {
+  const selection = resolveModelSelection({ provider, model, config, piDefaults });
+  const resolvedThinking = thinking !== undefined ? thinking : config.thinking;
+  const resolvedTools = tools !== undefined ? tools : config.tools;
+  const resolvedNoContextFiles = noContextFiles !== undefined ? noContextFiles : config.no_context_files;
+  const resolvedAppend = appendSystemPrompt !== undefined ? appendSystemPrompt : config.append_system_prompt;
+
+  if (resolvedThinking !== null && !THINKING_LEVELS.includes(resolvedThinking)) {
+    // pi 對不合法的 --thinking 值只印一句 warning 就**丟掉**（dist/cli/args.js:96-105），
+    // 靜默忽略一個被明確指定的覆寫是這個 codebase 反覆踩過的坑，所以在這裡先擋。
+    throw new Error(`不合法的 thinking 等級 "${resolvedThinking}"，只接受：${THINKING_LEVELS.join(" / ")}`);
+  }
+
+  const args = ["--mode", "rpc"];
+  if (selection.provider && selection.model) {
+    args.push("--provider", selection.provider, "--model", selection.model);
+  }
+  if (resolvedThinking !== null) args.push("--thinking", resolvedThinking);
+  if (resolvedTools !== null) args.push("--tools", resolvedTools);
+  args.push("--session-id", sessionId);
+  if (resolvedNoContextFiles) args.push("--no-context-files");
+  args.push("--no-skills", "--no-extensions");
+  if (resolvedAppend !== null && resolvedAppend !== undefined) {
+    args.push("--append-system-prompt", resolvedAppend);
+  }
+  return args;
 }
 
 function extractRequestedFiles(taskFile) {
@@ -43,12 +83,20 @@ function extractRequestedFiles(taskFile) {
 export async function dispatch({
   taskFile,
   cwd,
-  model = DEFAULT_MODEL,
-  timeoutS = DEFAULT_TIMEOUT_S,
+  config = loadConfig(),
+  piDefaults = loadPiDefaults(),
+  model,
+  provider,
+  thinking,
+  tools,
+  noContextFiles,
+  appendSystemPrompt,
+  timeoutS,
   sessionId,
   piCommand = ["pi"],
   gitDiffStat = "",
 }) {
+  const effectiveTimeoutS = timeoutS ?? config.timeout_s;
   const [command, ...prefixArgs] = piCommand;
   // piCommand 的路徑（例如測試用的 "node test/fixtures/fake-pi.mjs"）是相對於
   // 呼叫者的 process.cwd() 寫的，但子行程會被 spawn 到 task 的 cwd。若不先轉成
@@ -60,14 +108,17 @@ export async function dispatch({
     const candidate = resolvePath(process.cwd(), arg);
     return existsSync(candidate) ? candidate : arg;
   });
-  const args = [...resolvedPrefixArgs, ...buildPiArgs({ model, sessionId })];
+  const args = [
+    ...resolvedPrefixArgs,
+    ...buildPiArgs({ sessionId, config, piDefaults, provider, model, thinking, tools, noContextFiles, appendSystemPrompt }),
+  ];
   const child = spawn(command, args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
 
   const events = [];
   const startedAt = Date.now();
   let aborted = false;
   let timedOut = false;
-  // pi 自己回報的終局失敗（omlx 掛了、model id 不存在…）。見下方 stdout handler。
+  // pi 自己回報的終局失敗（推論伺服器掛了、model id 不存在…）。見下方 stdout handler。
   let failure = null;
   let stderr = "";
   // `child.killed` only reflects whether kill() successfully *sent* a signal,
@@ -168,7 +219,7 @@ export async function dispatch({
       //  rpc-mode.js:37 的 error() helper）然後**繼續活著等下一個指令** ——
       // rpc mode 是刻意常駐的，所以沒人收尾就會一路空等到 timeout。
       //
-      // 注意：**API 呼叫失敗（omlx 沒開、model id 打錯）不走這條**。實測過：
+      // 注意：**API 呼叫失敗（推論伺服器沒開、model id 打錯）不走這條**。實測過：
       // prompt 的 preflight 會先回 success:true，錯誤是掛在 assistant 訊息的
       // `stopReason:"error"` / `errorMessage` 上，然後照常發 agent_end
       // （見 verdict.mjs 的 terminalErrorMessage()）。這條涵蓋的是 preflight
@@ -193,7 +244,7 @@ export async function dispatch({
     // 會判 timeout），這裡只是把互斥閘門補齊。
     settled = true;
     killWithEscalation();
-  }, timeoutS * 1000);
+  }, effectiveTimeoutS * 1000);
 
   function send(command_) {
     if (child.stdin.writable) child.stdin.write(`${JSON.stringify(command_)}\n`);
