@@ -9,10 +9,11 @@ import { createRegistry } from "./registry.mjs";
 import { serve } from "./stdio-server.mjs";
 import { formatVerdict, assistantText, writtenPaths } from "./verdict.mjs";
 import { loadConfig, loadPiDefaults, isDrafterModel } from "./config.mjs";
+import { eventsLogPath as sessionEventsLogPath } from "./events-log.mjs";
 
-export function eventsLogPath() {
-  return join(homedir(), ".claude", "pi-delegate", "events.log");
-}
+// Re-exported so existing callers keep one import site; the reasoning for the per-session
+// path lives in src/events-log.mjs.
+export { eventsLogPath } from "./events-log.mjs";
 
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"];
 
@@ -151,16 +152,22 @@ export const TOOL_DEFINITIONS = [
 export function createToolHandlers({
   registry = createRegistry(),
   dispatchFn = realDispatch,
-  eventsLogPath: logPath = eventsLogPath(),
+  eventsLogPath: logPath = sessionEventsLogPath(),
   gitDiffStatFn = realGitDiffStat,
   config = loadConfig(),
   piDefaults = loadPiDefaults(),
 } = {}) {
-  function appendEventsLog(verdict) {
+  // Every line here reaches the session as a notification, so it is written to be read by
+  // a person rather than parsed. It names the project as well as the session_id: if this
+  // ever lands in a session that does not own the dispatch (the shared-log fallback in
+  // src/events-log.mjs), that session can see at a glance that it is not theirs instead of
+  // trying pi_result and getting "Unknown session_id".
+  function appendEventsLog(verdict, cwd) {
     mkdirSync(dirname(logPath), { recursive: true });
+    const files = verdict.write_count === 1 ? "1 file written" : `${verdict.write_count} files written`;
     appendFileSync(
       logPath,
-      `${JSON.stringify({ session_id: verdict.session_id, status: verdict.status, write_count: verdict.write_count })}\n`,
+      `pi dispatch ${verdict.session_id} ${verdict.status} in ${cwd} — ${files}. Collect it with pi_result session_id=${verdict.session_id}.\n`,
     );
   }
 
@@ -267,12 +274,12 @@ export function createToolHandlers({
       done
         .then((verdict) => {
           registry.update(sessionId, { verdict });
-          if (mode === "async") appendEventsLog(verdict);
+          if (mode === "async") appendEventsLog(verdict, cwd);
         })
         .catch((error) => {
           const verdict = failedVerdict(sessionId, error);
           registry.update(sessionId, { verdict });
-          if (mode === "async") appendEventsLog(verdict);
+          if (mode === "async") appendEventsLog(verdict, cwd);
         });
 
       if (mode === "async") {

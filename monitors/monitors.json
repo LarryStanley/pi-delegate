@@ -1,7 +1,7 @@
 [
   {
     "name": "pi-dispatch-complete",
-    "command": "tail -n 0 -F \"${HOME}/.claude/pi-delegate/events.log\"",
+    "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/pi-watch\"",
     "description": "Notification when an async pi dispatch completes"
   }
 ]
