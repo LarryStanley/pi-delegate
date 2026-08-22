@@ -1,0 +1,15 @@
+{
+  "name": "pi-delegate",
+  "owner": {
+    "name": "Stanley",
+    "url": "https://github.com/LarryStanley"
+  },
+  "description": "Delegate coding work from Claude Code to a local pi agent.",
+  "plugins": [
+    {
+      "name": "pi-delegate",
+      "source": "./",
+      "description": "Dispatch implementation and test writing to a local pi agent over a held-open RPC session, with steer/abort mid-run and a per-project discipline mode."
+    }
+  ]
+}
