@@ -83,7 +83,7 @@ test("every tool has a non-empty description and an inputSchema", () => {
 
 test("sync 派工回傳格式化判決而非原始 JSON", async () => {
   const task = tmpFile("TASK.md");
-  writeFileSync(task, "改 a.ts");
+  writeFileSync(task, "Modify a.ts");
   const { handlers } = setup(fakeDispatch());
   const result = await handlers.pi_dispatch({ task_file: task, cwd: "/tmp", mode: "sync" });
   assert.ok(result.content[0].text.includes("status:"));
@@ -92,7 +92,7 @@ test("sync 派工回傳格式化判決而非原始 JSON", async () => {
 
 test("async 派工立刻回 session_id", async () => {
   const task = tmpFile("TASK.md");
-  writeFileSync(task, "改 a.ts");
+  writeFileSync(task, "Modify a.ts");
   const { handlers } = setup(fakeDispatch());
   const result = await handlers.pi_dispatch({ task_file: task, cwd: "/tmp", mode: "async" });
   assert.match(result.content[0].text, /session_id/);
@@ -100,7 +100,7 @@ test("async 派工立刻回 session_id", async () => {
 
 test("async 完成後寫一行到 events.log", async () => {
   const task = tmpFile("TASK.md");
-  writeFileSync(task, "改 a.ts");
+  writeFileSync(task, "Modify a.ts");
   const { handlers, eventsLogPath } = setup(fakeDispatch());
   await handlers.pi_dispatch({ task_file: task, cwd: "/tmp", mode: "async" });
   await new Promise((r) => setTimeout(r, 50));
@@ -110,7 +110,7 @@ test("async 完成後寫一行到 events.log", async () => {
 
 test("派工給 drafter 模型會被拒絕且不呼叫 dispatch", async () => {
   const task = tmpFile("TASK.md");
-  writeFileSync(task, "改 a.ts");
+  writeFileSync(task, "Modify a.ts");
   let called = false;
   const { handlers } = setup(async (...a) => {
     called = true;
@@ -126,7 +126,7 @@ test("派工給 drafter 模型會被拒絕且不呼叫 dispatch", async () => {
 // The co-pilot guard keys off patterns in the config, not one machine model id
 test("clearing drafter_patterns lets the same model be dispatched to", async () => {
   const task = tmpFile("TASK.md");
-  writeFileSync(task, "改 a.ts");
+  writeFileSync(task, "Modify a.ts");
   const { handlers } = setup(fakeDispatch(), { ...CONFIG, drafter_patterns: [] });
   const result = await handlers.pi_dispatch({
     task_file: task, cwd: "/tmp", mode: "sync", model: "whatever-DFlash-draft",
@@ -141,7 +141,7 @@ test("clearing drafter_patterns lets the same model be dispatched to", async () 
 // model should be undefined (i.e. emit no flag), not some model id the plugin invented.
 test("with no config and no arguments pi_dispatch still dispatches, specifying neither provider nor model", async () => {
   const task = tmpFile("TASK.md");
-  writeFileSync(task, "改 a.ts");
+  writeFileSync(task, "Modify a.ts");
   const seen = [];
   const { handlers } = setup(async (args) => {
     seen.push(args);
@@ -155,7 +155,7 @@ test("with no config and no arguments pi_dispatch still dispatches, specifying n
 
 test("pi_dispatch passes its provider / model / timeout_s arguments through to dispatch", async () => {
   const task = tmpFile("TASK.md");
-  writeFileSync(task, "改 a.ts");
+  writeFileSync(task, "Modify a.ts");
   const seen = [];
   const { handlers } = setup(async (args) => {
     seen.push(args);
@@ -174,7 +174,7 @@ test("pi_dispatch passes its provider / model / timeout_s arguments through to d
 // this codebase has hit five times.
 test("thinking / tools / no_context_files / append_system_prompt overrides really reach dispatch", async () => {
   const task = tmpFile("TASK.md");
-  writeFileSync(task, "改 a.ts");
+  writeFileSync(task, "Modify a.ts");
   const seen = [];
   const { handlers } = setup(async (args) => {
     seen.push(args);
@@ -193,7 +193,7 @@ test("thinking / tools / no_context_files / append_system_prompt overrides reall
 
 test("the config timeout_s applies when none is specified", async () => {
   const task = tmpFile("TASK.md");
-  writeFileSync(task, "改 a.ts");
+  writeFileSync(task, "Modify a.ts");
   const seen = [];
   const { handlers } = setup(async (args) => {
     seen.push(args);
@@ -223,7 +223,7 @@ test("未知的 session_id 回錯誤並列出有效 id", async () => {
 
 test("pi_result 取回 async 派工的判決", async () => {
   const task = tmpFile("TASK.md");
-  writeFileSync(task, "改 a.ts");
+  writeFileSync(task, "Modify a.ts");
   const { handlers } = setup(fakeDispatch());
   const started = await handlers.pi_dispatch({ task_file: task, cwd: "/tmp", mode: "async" });
   const sessionId = started.content[0].text.match(/session_id:\s*(\S+)/)[1];
@@ -234,7 +234,7 @@ test("pi_result 取回 async 派工的判決", async () => {
 
 test("pi_result 對 reject 的 done 回傳失敗判決而非拋出錯誤", async () => {
   const task = tmpFile("TASK.md");
-  writeFileSync(task, "改 a.ts");
+  writeFileSync(task, "Modify a.ts");
   // rejects on a later tick so the registry's `verdict` field is still null
   // when pi_result is called — forces pi_result to await entry.done itself
   // instead of short-circuiting on an already-stored verdict.
@@ -279,7 +279,7 @@ async function dispatchAndGetSessionId(handlers, task, mode = "async") {
 // [I8] 欄位名對齊 spec §5：{status, elapsed_s, current_tool, files_touched}
 test("pi_status 對已完成的派工回傳 spec §5 的四個欄位", async () => {
   const task = tmpFile("TASK.md");
-  writeFileSync(task, "改 a.ts");
+  writeFileSync(task, "Modify a.ts");
   const { handlers } = setup(fakeDispatch());
   const sessionId = await dispatchAndGetSessionId(handlers, task, "sync");
   const status = await handlers.pi_status({ session_id: sessionId });
@@ -293,7 +293,7 @@ test("pi_status 對已完成的派工回傳 spec §5 的四個欄位", async () 
 
 test("pi_status 對還在跑的派工回傳 running / 進行中的工具 / 已經寫過的檔", async () => {
   const task = tmpFile("TASK.md");
-  writeFileSync(task, "改 a.ts");
+  writeFileSync(task, "Modify a.ts");
   const events = [
     { type: "tool_execution_start", toolCallId: "t1", toolName: "write", args: { path: "a.ts" } },
     { type: "tool_execution_end", toolCallId: "t1", toolName: "write", result: {}, isError: false },
@@ -320,7 +320,7 @@ test("pi_status 對還在跑的派工回傳 running / 進行中的工具 / 已�
 
 test("pi_status 對未知 session_id 回錯誤並列出有效 id", async () => {
   const task = tmpFile("TASK.md");
-  writeFileSync(task, "改 a.ts");
+  writeFileSync(task, "Modify a.ts");
   const { handlers } = setup(fakeDispatch());
   const knownId = await dispatchAndGetSessionId(handlers, task, "sync");
   const result = await handlers.pi_status({ session_id: "ghost" });
@@ -331,7 +331,7 @@ test("pi_status 對未知 session_id 回錯誤並列出有效 id", async () => {
 
 test("pi_steer 把訊息送進 handle.steer", async () => {
   const task = tmpFile("TASK.md");
-  writeFileSync(task, "改 a.ts");
+  writeFileSync(task, "Modify a.ts");
   const steerCalls = [];
   const dispatchFn = async ({ sessionId }) => ({
     handle: {
@@ -351,7 +351,7 @@ test("pi_steer 把訊息送進 handle.steer", async () => {
 
 test("pi_steer 對未知 session_id 回錯誤", async () => {
   const task = tmpFile("TASK.md");
-  writeFileSync(task, "改 a.ts");
+  writeFileSync(task, "Modify a.ts");
   const { handlers } = setup(fakeDispatch());
   const knownId = await dispatchAndGetSessionId(handlers, task, "sync");
   const result = await handlers.pi_steer({ session_id: "ghost", message: "hi" });
@@ -362,7 +362,7 @@ test("pi_steer 對未知 session_id 回錯誤", async () => {
 
 test("pi_abort 呼叫 handle.abort", async () => {
   const task = tmpFile("TASK.md");
-  writeFileSync(task, "改 a.ts");
+  writeFileSync(task, "Modify a.ts");
   let abortCalled = 0;
   const dispatchFn = async ({ sessionId }) => ({
     handle: {
@@ -382,7 +382,7 @@ test("pi_abort 呼叫 handle.abort", async () => {
 
 test("pi_abort 對未知 session_id 回錯誤", async () => {
   const task = tmpFile("TASK.md");
-  writeFileSync(task, "改 a.ts");
+  writeFileSync(task, "Modify a.ts");
   const { handlers } = setup(fakeDispatch());
   const knownId = await dispatchAndGetSessionId(handlers, task, "sync");
   const result = await handlers.pi_abort({ session_id: "ghost" });
@@ -393,7 +393,7 @@ test("pi_abort 對未知 session_id 回錯誤", async () => {
 
 test("pi_transcript filter=text 只回傳 assistant 文字", async () => {
   const task = tmpFile("TASK.md");
-  writeFileSync(task, "改 a.ts");
+  writeFileSync(task, "Modify a.ts");
   const { handlers } = setup(fakeDispatchWithEvents(buildTranscriptEvents()));
   const sessionId = await dispatchAndGetSessionId(handlers, task);
   const result = await handlers.pi_transcript({ session_id: sessionId, filter: "text" });
@@ -402,7 +402,7 @@ test("pi_transcript filter=text 只回傳 assistant 文字", async () => {
 
 test("pi_transcript filter=tools 只回傳工具呼叫", async () => {
   const task = tmpFile("TASK.md");
-  writeFileSync(task, "改 a.ts");
+  writeFileSync(task, "Modify a.ts");
   const { handlers } = setup(fakeDispatchWithEvents(buildTranscriptEvents()));
   const sessionId = await dispatchAndGetSessionId(handlers, task);
   const result = await handlers.pi_transcript({ session_id: sessionId, filter: "tools" });
@@ -411,7 +411,7 @@ test("pi_transcript filter=tools 只回傳工具呼叫", async () => {
 
 test("pi_transcript filter=last_n 回傳最後 n 個事件", async () => {
   const task = tmpFile("TASK.md");
-  writeFileSync(task, "改 a.ts");
+  writeFileSync(task, "Modify a.ts");
   const events = buildTranscriptEvents();
   const { handlers } = setup(fakeDispatchWithEvents(events));
   const sessionId = await dispatchAndGetSessionId(handlers, task);
@@ -424,7 +424,7 @@ test("pi_transcript filter=last_n 回傳最後 n 個事件", async () => {
 
 test("pi_transcript 在 handle 沒有 events 時退回空陣列", async () => {
   const task = tmpFile("TASK.md");
-  writeFileSync(task, "改 a.ts");
+  writeFileSync(task, "Modify a.ts");
   const { handlers } = setup(fakeDispatch());
   const sessionId = await dispatchAndGetSessionId(handlers, task);
   const result = await handlers.pi_transcript({ session_id: sessionId, filter: "text" });
@@ -433,7 +433,7 @@ test("pi_transcript 在 handle 沒有 events 時退回空陣列", async () => {
 
 test("pi_transcript 對未知 session_id 回錯誤", async () => {
   const task = tmpFile("TASK.md");
-  writeFileSync(task, "改 a.ts");
+  writeFileSync(task, "Modify a.ts");
   const { handlers } = setup(fakeDispatch());
   const knownId = await dispatchAndGetSessionId(handlers, task, "sync");
   const result = await handlers.pi_transcript({ session_id: "ghost" });
@@ -444,7 +444,7 @@ test("pi_transcript 對未知 session_id 回錯誤", async () => {
 
 test("pi_stats 回傳已完成派工的 token 與耗時", async () => {
   const task = tmpFile("TASK.md");
-  writeFileSync(task, "改 a.ts");
+  writeFileSync(task, "Modify a.ts");
   const { handlers } = setup(fakeDispatch());
   const sessionId = await dispatchAndGetSessionId(handlers, task, "sync");
   const stats = await handlers.pi_stats({ session_id: sessionId });
@@ -455,7 +455,7 @@ test("pi_stats 回傳已完成派工的 token 與耗時", async () => {
 
 test("pi_stats 對還在跑的派工回傳 running", async () => {
   const task = tmpFile("TASK.md");
-  writeFileSync(task, "改 a.ts");
+  writeFileSync(task, "Modify a.ts");
   const dispatchFn = async ({ sessionId }) => ({
     handle: { sessionId, steer() {}, async abort() {}, state: () => ({ running: true }) },
     done: new Promise(() => {}), // never settles: session is still running
@@ -468,7 +468,7 @@ test("pi_stats 對還在跑的派工回傳 running", async () => {
 
 test("pi_stats 對未知 session_id 回錯誤", async () => {
   const task = tmpFile("TASK.md");
-  writeFileSync(task, "改 a.ts");
+  writeFileSync(task, "Modify a.ts");
   const { handlers } = setup(fakeDispatch());
   const knownId = await dispatchAndGetSessionId(handlers, task, "sync");
   const result = await handlers.pi_stats({ session_id: "ghost" });
@@ -481,7 +481,7 @@ test("pi_stats 對未知 session_id 回錯誤", async () => {
 
 test("git_diff_stat 在派工結束時才求值，不是在派工之前", async () => {
   const task = tmpFile("TASK.md");
-  writeFileSync(task, "改 a.ts");
+  writeFileSync(task, "Modify a.ts");
 
   let tree = "(乾淨的工作樹)";
   let calls = 0;
@@ -527,7 +527,7 @@ test("git_diff_stat 在派工結束時才求值，不是在派工之前", async 
 
 test("pi_transcript filter=text 也吃字串型 content（不再從逐字稿消失）", async () => {
   const task = tmpFile("TASK.md");
-  writeFileSync(task, "改 a.ts");
+  writeFileSync(task, "Modify a.ts");
   const events = [
     { type: "message_end", message: { role: "assistant", content: "字串型回答" } },
     { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "陣列型回答" }] } },
@@ -543,7 +543,7 @@ test("pi_transcript filter=text 也吃字串型 content（不再從逐字稿消�
 
 test("pi_result and pi_status give the same single sentence for an unknown session_id", async () => {
   const task = tmpFile("TASK.md");
-  writeFileSync(task, "改 a.ts");
+  writeFileSync(task, "Modify a.ts");
   const { handlers } = setup(fakeDispatch());
   await dispatchAndGetSessionId(handlers, task, "sync");
   const fromResult = await handlers.pi_result({ session_id: "ghost" });
@@ -557,7 +557,7 @@ test("pi_result and pi_status give the same single sentence for an unknown sessi
 
 test("session_id 撞號時不會先 spawn 子行程", async () => {
   const task = tmpFile("TASK.md");
-  writeFileSync(task, "改 a.ts");
+  writeFileSync(task, "Modify a.ts");
   let spawned = 0;
   const registry = createRegistry();
   const handlers = createToolHandlers({

@@ -24,7 +24,7 @@ const NO_PI_DEFAULTS = { provider: null, model: null };
 // auto-discovery glob without touching package.json's test script.
 const FAKE_PI = ["node", "fixtures/fake-pi.mjs"];
 
-function tmpTask(body = "改 a.ts") {
+function tmpTask(body = "Modify a.ts") {
   const dir = mkdtempSync(join(tmpdir(), "pi-task-"));
   const file = join(dir, "TASK.md");
   writeFileSync(file, body);
@@ -142,7 +142,7 @@ test("append_system_prompt is omitted by default and emitted when supplied", () 
   assert.equal(appended[appended.indexOf("--append-system-prompt") + 1], "only touch the files named in the task book");
 });
 
-test("正常結束回傳 completed 判決", async () => {
+test("a normal finish returns a completed verdict", async () => {
   const { dir, file } = tmpTask();
   const { done } = await dispatch({
     taskFile: file, cwd: dir, config: CONFIG, piDefaults: NO_PI_DEFAULTS, timeoutS: 10,
@@ -153,7 +153,7 @@ test("正常結束回傳 completed 判決", async () => {
   assert.equal(verdict.session_id, "s1");
 });
 
-test("逾時回傳 timeout 判決且仍附 git_diff_stat", async () => {
+test("a timeout returns a timeout verdict and still attaches git_diff_stat", async () => {
   const { dir, file } = tmpTask();
   const { done } = await dispatch({
     taskFile: file, cwd: dir, config: CONFIG, piDefaults: NO_PI_DEFAULTS, timeoutS: 1,
@@ -165,7 +165,7 @@ test("逾時回傳 timeout 判決且仍附 git_diff_stat", async () => {
   assert.equal(verdict.git_diff_stat, "1 file changed");
 });
 
-test("abort 回傳 aborted 判決", async () => {
+test("abort returns an aborted verdict", async () => {
   const { dir, file } = tmpTask();
   const { handle, done } = await dispatch({
     taskFile: file, cwd: dir, config: CONFIG, piDefaults: NO_PI_DEFAULTS, timeoutS: 30,
@@ -175,7 +175,7 @@ test("abort 回傳 aborted 判決", async () => {
   assert.equal((await done).status, "aborted");
 });
 
-test("write 事件反映在判決的 write_count", async () => {
+test("write events are reflected in the verdict's write_count", async () => {
   const { dir, file } = tmpTask();
   const { done } = await dispatch({
     taskFile: file, cwd: dir, config: CONFIG, piDefaults: NO_PI_DEFAULTS, timeoutS: 10,
@@ -186,18 +186,18 @@ test("write 事件反映在判決的 write_count", async () => {
   assert.deepEqual(verdict.files_written, ["a.ts", "b.ts"]);
 });
 
-test("steer 會把訊息送進子行程的 stdin", async () => {
+test("steer sends its message into the child process's stdin", async () => {
   const { dir, file } = tmpTask();
   const { handle, done } = await dispatch({
     taskFile: file, cwd: dir, config: CONFIG, piDefaults: NO_PI_DEFAULTS, timeoutS: 10,
     sessionId: "s5", piCommand: [...FAKE_PI, "--echo-steer"], gitDiffStat: "",
   });
-  await handle.steer("往左一點");
+  await handle.steer("a bit to the left");
   const verdict = await done;
-  assert.ok(verdict.last_message.includes("往左一點"));
+  assert.ok(verdict.last_message.includes("a bit to the left"));
 });
 
-test("agent_end 之後子行程仍存活（真實 pi RPC 行為）也要在遠短於 timeout 內回傳 completed", async () => {
+test("the child staying alive after agent_end (real pi RPC behavior) must still return completed well under the timeout", async () => {
   const { dir, file } = tmpTask();
   const timeoutS = 15;
   const startedAt = Date.now();
@@ -237,9 +237,9 @@ test("agent_end 之後子行程仍存活（真實 pi RPC 行為）也要在遠�
 // is a no-op by design, it cannot retroactively change a settled
 // Promise. That "abort while genuinely still running returns aborted"
 // behaviour is unchanged and already covered by the unrelated "abort
-// 回傳 aborted 判決" test above, which uses --hang and never triggers a
+// returns an aborted verdict" test above, which uses --hang and never triggers a
 // terminal event at all).
-test("abort() 在終局事件已經 settle 之後呼叫，settled 互斥閘門要擋掉第二次 SIGTERM", async () => {
+test("calling abort() after the terminal event has already settled: the settled mutual-exclusion gate must block a second SIGTERM", async () => {
   const { dir, file } = tmpTask();
   const logDir = mkdtempSync(join(tmpdir(), "pi-sigterm-"));
   const sigtermLog = join(logDir, "sigterm.log");
@@ -250,19 +250,21 @@ test("abort() 在終局事件已經 settle 之後呼叫，settled 互斥閘門�
     gitDiffStat: "",
   });
 
-  // 終局事件會在這裡讓 settleFromTerminalEvent() 跑完：settled 翻 true、
-  // 判決定案、送出第一次 SIGTERM。子行程因為註冊了 --sigterm-log 的
-  // handler 而不會真的死於這第一次 SIGTERM，繼續活著等我們檢查。
+  // The terminal event lets settleFromTerminalEvent() run to completion here: settled
+  // flips true, the verdict settles, and the first SIGTERM goes out. Because the child
+  // process registered a --sigterm-log handler, it doesn't actually die from this first
+  // SIGTERM, and stays alive for us to inspect.
   const verdict = await done;
   assert.equal(verdict.status, "completed");
 
-  // 這時 settled 已經是 true。沒有互斥閘門的話，這裡會再送一次 SIGTERM。
+  // settled is already true at this point. Without the mutual-exclusion gate, this
+  // would send another SIGTERM.
   await handle.abort();
 
-  // 等超過 dispatch.mjs 內部的 SIGKILL grace period（2000ms），讓任何
-  // 「第二次 killWithEscalation() 又各自排了一個 graceTimer」的效果有
-  // 機會真的發生並被 --sigterm-log 記下來，同時也讓子行程被 SIGKILL
-  // 收尾，不留殭屍行程。
+  // Wait past dispatch.mjs's internal SIGKILL grace period (2000ms), so that any effect
+  // from "a second killWithEscalation() scheduling its own graceTimer" gets a chance to
+  // actually happen and be recorded by --sigterm-log, while also letting the child
+  // process get closed out by SIGKILL rather than left as a zombie.
   await new Promise((resolve) => setTimeout(resolve, 2500));
 
   const received = readFileSync(sigtermLog, "utf8").trim().split("\n").filter(Boolean);
@@ -273,7 +275,7 @@ test("abort() 在終局事件已經 settle 之後呼叫，settled 互斥閘門�
   );
 });
 
-test("子行程忽略 SIGTERM 時，逾時仍靠 SIGKILL escalation 結束並回傳 timeout", async () => {
+test("when the child ignores SIGTERM, a timeout still ends it via SIGKILL escalation and returns timeout", async () => {
   const { dir, file } = tmpTask();
   const { done } = await dispatch({
     taskFile: file, cwd: dir, config: CONFIG, piDefaults: NO_PI_DEFAULTS, timeoutS: 1,
@@ -283,28 +285,28 @@ test("子行程忽略 SIGTERM 時，逾時仍靠 SIGKILL escalation 結束並回
   assert.equal(verdict.status, "timeout");
 });
 
-// --- [I1] gitDiffStat 的求值時機 ---
+// --- [I1] when gitDiffStat gets evaluated ---
 
-test("gitDiffStat 是 thunk 時，在 settle 當下才求值（不是 spawn 當下）", async () => {
+test("when gitDiffStat is a thunk, it is evaluated at settle time (not at spawn time)", async () => {
   const { dir, file } = tmpTask();
-  let stat = "spawn 當下（乾淨的工作樹）";
+  let stat = "at spawn time (a clean working tree)";
   const { done } = await dispatch({
     taskFile: file, cwd: dir, config: CONFIG, piDefaults: NO_PI_DEFAULTS, timeoutS: 1,
     sessionId: "g1", piCommand: [...FAKE_PI, "--hang"],
     gitDiffStat: () => stat,
   });
-  // dispatch() 已經回來、pi 還在跑 —— 這時候工作樹才被動到
+  // dispatch() has already returned and pi is still running — only now does the working tree get touched
   stat = "1 file changed, 3 insertions(+)";
   const verdict = await done;
   assert.equal(verdict.status, "timeout");
   assert.equal(
     verdict.git_diff_stat,
     "1 file changed, 3 insertions(+)",
-    "逾時判決要反映 pi 實際寫了什麼，不是派工前的快照",
+    "a timeout verdict must reflect what pi actually wrote, not a pre-dispatch snapshot",
   );
 });
 
-test("gitDiffStat 傳字串時照舊原樣帶進判決", async () => {
+test("when gitDiffStat is given a plain string, it is carried into the verdict unchanged", async () => {
   const { dir, file } = tmpTask();
   const { done } = await dispatch({
     taskFile: file, cwd: dir, config: CONFIG, piDefaults: NO_PI_DEFAULTS, timeoutS: 10,
@@ -313,7 +315,7 @@ test("gitDiffStat 傳字串時照舊原樣帶進判決", async () => {
   assert.equal((await done).git_diff_stat, "2 files changed");
 });
 
-// --- [I2] pi 回報終局失敗時要立刻收尾，不要拖滿 timeout ---
+// --- [I2] a terminal failure reported by pi must close things out immediately, not run out the timeout ---
 
 test("response success:false (inference server down) settles as failed at once and carries the error string", async () => {
   const { dir, file } = tmpTask();
@@ -329,13 +331,13 @@ test("response success:false (inference server down) settles as failed at once a
   assert.match(verdict.failure, /ECONNREFUSED/);
   assert.ok(
     elapsedS < timeoutS / 4,
-    `應該秒級收尾而不是等滿 ${timeoutS}s timeout，實測 ${elapsedS}s`,
+    `expected to settle within seconds rather than the full ${timeoutS}s timeout, measured ${elapsedS}s`,
   );
 });
 
-// --- [I3] spec §11：spawn 失敗要 status: failed 附 stderr ---
+// --- [I3] spec §11: a spawn failure must report status: failed with stderr attached ---
 
-test("pi 不在 PATH 上時，判決是 failed 而且帶得出 stderr 線索", async () => {
+test("when pi is not on PATH, the verdict is failed and still carries a stderr clue", async () => {
   const { dir, file } = tmpTask();
   const { done } = await dispatch({
     taskFile: file, cwd: dir, config: CONFIG, piDefaults: NO_PI_DEFAULTS, timeoutS: 10,
@@ -348,15 +350,16 @@ test("pi 不在 PATH 上時，判決是 failed 而且帶得出 stderr 線索", a
   assert.match(formatVerdict(verdict), /ENOENT/);
 });
 
-// --- [I6] settled 互斥閘門在 timeout 路徑上也要生效 ---
+// --- [I6] the settled mutual-exclusion gate must also hold on the timeout path ---
 
-test("終局事件比 timeout 晚到時，不會再送第二次 SIGTERM", async () => {
+test("when the terminal event arrives after the timeout, a second SIGTERM is not sent", async () => {
   const { dir, file } = tmpTask();
   const logDir = mkdtempSync(join(tmpdir(), "pi-sigterm-late-"));
   const sigtermLog = join(logDir, "sigterm.log");
 
-  // timeout 在 1s 觸發（SIGTERM #1，被子行程吃掉），agent_end 在 1.5s 才到。
-  // 沒有閘門的話那個遲到的事件會呼叫 killWithEscalation() → SIGTERM #2。
+  // The timeout fires at 1s (SIGTERM #1, swallowed by the child process); agent_end
+  // doesn't arrive until 1.5s. Without the gate, that late event would call
+  // killWithEscalation() again → SIGTERM #2.
   const { done } = await dispatch({
     taskFile: file, cwd: dir, config: CONFIG, piDefaults: NO_PI_DEFAULTS, timeoutS: 1,
     sessionId: "t1",
@@ -373,13 +376,13 @@ test("終局事件比 timeout 晚到時，不會再送第二次 SIGTERM", async 
   assert.equal(
     received.length,
     1,
-    `expected exactly 1 SIGTERM (timeout 路徑也該翻 settled)，got ${received.length}`,
+    `expected exactly 1 SIGTERM (the timeout path must also flip settled), got ${received.length}`,
   );
 });
 
-// --- [C3] 替身與實作對同一個真實形狀（fixture 也已改成 message.usage） ---
+// --- [C3] the fake and the implementation agree on the same real shape (the fixture has also switched to message.usage) ---
 
-test("判決的 tokens 由事件流裡的 message.usage 算出，不是 0/0", async () => {
+test("the verdict's tokens are computed from message.usage in the event stream, not 0/0", async () => {
   const { dir, file } = tmpTask();
   const { done } = await dispatch({
     taskFile: file, cwd: dir, config: CONFIG, piDefaults: NO_PI_DEFAULTS, timeoutS: 10,
@@ -388,9 +391,9 @@ test("判決的 tokens 由事件流裡的 message.usage 算出，不是 0/0", as
   assert.deepEqual((await done).tokens, { input: 10, output: 5 });
 });
 
-// --- [I2, 修正版] 真實形狀的 API 失敗要秒級收尾並判 failed ---
+// --- [I2, corrected] a real-shaped API failure must close out within seconds and be judged failed ---
 
-test("model id 打錯（stopReason=error）判 failed 而不是 0 秒的假 completed", async () => {
+test("a wrong model id (stopReason=error) is judged failed, not a false 0-second completed", async () => {
   const { dir, file } = tmpTask();
   const { done } = await dispatch({
     taskFile: file, cwd: dir, config: CONFIG, piDefaults: NO_PI_DEFAULTS, timeoutS: 20,
