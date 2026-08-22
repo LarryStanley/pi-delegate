@@ -39,7 +39,7 @@ export function consumeProbe(file = probeFlagPath()) {
 //   cwd=/proj/src  → root=/proj → rel="src/a.ts"        → blocked (hole closed)
 //   cwd=~/src/proj → root=~/src/proj → rel="lib/a.ts"   → allowed (false positive fixed)
 //   cwd=~/src/proj → root=~/src/proj → rel="src/a.ts"   → blocked (correctly, as before)
-function findProjectRoot(cwd, markerExists) {
+export function findProjectRoot(cwd, markerExists = existsSync) {
   let dir = resolve(String(cwd));
   for (;;) {
     if (ROOT_MARKERS.some((marker) => markerExists(join(dir, marker)))) return dir;
@@ -47,6 +47,27 @@ function findProjectRoot(cwd, markerExists) {
     if (parent === dir) return null;
     dir = parent;
   }
+}
+
+// The project a given FILE belongs to — the anchor for "which mode applies to this edit".
+//
+// The discipline mode is a property of the project being edited, not of wherever the
+// session happens to be sitting. Keying it on cwd left two holes, both silent:
+//   - editing a strict project's src/ from a session opened elsewhere sailed through,
+//     because getMode(cwd) read the other project's mode (and isProtectedPath then
+//     measured relative() from the wrong root, so the file read as "../…" = unprotected);
+//   - even inside the right project, `cd src/deep` was enough to escape, because the mode
+//     was recorded under the project root and getMode() is an exact key lookup.
+// Anchoring both the mode lookup and the protection check to the file's own root closes
+// both at once.
+export function projectRootForFile(filePath, markerExists = existsSync) {
+  return findProjectRoot(dirname(resolve(String(filePath))), markerExists);
+}
+
+// The project a DIRECTORY belongs to — used when recording a mode, so that setting it from
+// a subdirectory records it against the same root the hook will later look up.
+export function projectRootForDir(dir, markerExists = existsSync) {
+  return findProjectRoot(resolve(String(dir)), markerExists) ?? resolve(String(dir));
 }
 
 // When no project marker can be found at all (not a git repo, no manifest of any kind),

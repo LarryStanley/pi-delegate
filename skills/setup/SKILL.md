@@ -71,6 +71,9 @@ anything:
   is never intercepted — it's a discipline rail against your own habit, not a security
   boundary.
 
+The mode is stored against the project root and applied by the edited file's project
+root, so it follows the project rather than your session's working directory.
+
 "Existing product code" means a file that already exists under the project's `src/`;
 `tasks/`, `scripts/`, `docs/`, markdown, config files, and brand-new files are always
 allowed through regardless of mode.

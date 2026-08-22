@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { getMode } from "../src/modes.mjs";
-import { isProtectedPath, consumeProbe } from "../src/guard.mjs";
+import { isProtectedPath, consumeProbe, projectRootForFile, projectRootForDir } from "../src/guard.mjs";
 
 async function readStdin() {
   return new Promise((resolve) => {
@@ -18,7 +18,7 @@ try {
   // When stdin is broken, the only thing left to ask is "is the current cwd strict" —
   // this deliberately fails closed: a hook payload that cannot be parsed must not quietly
   // become "no opinion, allow it", especially in strict mode.
-  if (getMode(process.cwd()) === "strict") {
+  if (getMode(projectRootForDir(process.cwd())) === "strict") {
     console.log(JSON.stringify({
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
@@ -33,11 +33,17 @@ try {
   process.exit(0);
 }
 
-const cwd = input.cwd ?? process.cwd();
-if (getMode(cwd) !== "strict") process.exit(0);
-
 const filePath = input.tool_input?.file_path;
-if (!filePath || !isProtectedPath(filePath, { cwd })) process.exit(0);
+if (!filePath) process.exit(0);
+
+// The mode belongs to the project being EDITED, not to wherever the session is sitting.
+// Anchoring to the file's own project root is what makes strict hold when the edit comes
+// from another project's session, or from a subdirectory of this one. Falling back to cwd
+// covers a file that belongs to no project at all (no .git, no manifest anywhere above it).
+const root = projectRootForFile(filePath) ?? (input.cwd ?? process.cwd());
+if (getMode(root) !== "strict") process.exit(0);
+
+if (!isProtectedPath(filePath, { cwd: root })) process.exit(0);
 
 if (consumeProbe()) {
   console.log(JSON.stringify({ systemMessage: `Probe allowed this write: ${filePath} (flag consumed)` }));

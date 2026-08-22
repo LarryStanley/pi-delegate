@@ -245,3 +245,68 @@ test("doctor-check: a broken models.json degrades to a warning instead of killin
   assert.match(out.hookSpecificOutput.additionalContext, /is not valid JSON/);
   assert.match(out.hookSpecificOutput.additionalContext, /pi-delegate mode: soft/);
 });
+
+// ---- the mode belongs to the FILE's project, not to the session's cwd ----
+// The original lookup was `getMode(input.cwd)`, which meant a project's strict mode only
+// applied while your session happened to be sitting inside it. Editing that project's
+// src/ from a session opened somewhere else sailed straight through — and so did the
+// protection check, because isProtectedPath measured `relative()` from the cwd's project
+// root, making any file outside it read as "../…" and therefore unprotected.
+
+test("mode-guard: a strict project is protected even when the session cwd is elsewhere", () => {
+  const home = tmpHome();
+  const strictProject = tmpProject();
+  const elsewhere = tmpProject();
+  writeFileSync(join(strictProject, "package.json"), "{}\n");
+  writeFileSync(join(elsewhere, "package.json"), "{}\n");
+  setMode(strictProject, "strict", stateFileFor(home));
+  setMode(elsewhere, "soft", stateFileFor(home));
+
+  mkdirSync(join(strictProject, "src"), { recursive: true });
+  const filePath = join(strictProject, "src", "existing.ts");
+  writeFileSync(filePath, "export const x = 1;\n");
+
+  const payload = JSON.stringify({ cwd: elsewhere, tool_input: { file_path: filePath } });
+  const result = runHook(MODE_GUARD, { cwd: elsewhere, home, stdin: payload });
+
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /"permissionDecision":"deny"/, "strict must follow the file, not the session");
+  assert.match(result.stdout, /existing\.ts/);
+});
+
+test("mode-guard: a soft project is NOT blocked just because the session sits in a strict one", () => {
+  const home = tmpHome();
+  const strictProject = tmpProject();
+  const softProject = tmpProject();
+  writeFileSync(join(strictProject, "package.json"), "{}\n");
+  writeFileSync(join(softProject, "package.json"), "{}\n");
+  setMode(strictProject, "strict", stateFileFor(home));
+  setMode(softProject, "soft", stateFileFor(home));
+
+  mkdirSync(join(softProject, "src"), { recursive: true });
+  const filePath = join(softProject, "src", "existing.ts");
+  writeFileSync(filePath, "export const x = 1;\n");
+
+  const payload = JSON.stringify({ cwd: strictProject, tool_input: { file_path: filePath } });
+  const result = runHook(MODE_GUARD, { cwd: strictProject, home, stdin: payload });
+
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout.trim(), "", "the file's own project is soft, so nothing is blocked");
+});
+
+test("mode-guard: strict still applies to a file edited from a subdirectory of its own project", () => {
+  const home = tmpHome();
+  const project = tmpProject();
+  writeFileSync(join(project, "package.json"), "{}\n");
+  setMode(project, "strict", stateFileFor(home));
+  mkdirSync(join(project, "src", "deep"), { recursive: true });
+  const filePath = join(project, "src", "deep", "existing.ts");
+  writeFileSync(filePath, "export const x = 1;\n");
+  const subdir = join(project, "src", "deep");
+
+  const payload = JSON.stringify({ cwd: subdir, tool_input: { file_path: filePath } });
+  const result = runHook(MODE_GUARD, { cwd: subdir, home, stdin: payload });
+
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /"permissionDecision":"deny"/);
+});

@@ -9,11 +9,17 @@
 // problem, so the plugin root only ever has to reach a script path — never an import
 // specifier.
 import { MODES, getMode, setMode } from "../src/modes.mjs";
+import { projectRootForDir } from "../src/guard.mjs";
 
 const requested = process.argv[2];
 
+// Record against the project root, not the directory you happen to be standing in. The
+// hook looks the mode up by the edited file's project root, and getMode() is an exact key
+// lookup — so a mode set from `src/deep` under the raw cwd would simply never be found.
+const project = projectRootForDir(process.cwd());
+
 if (!requested) {
-  console.log(`Current mode: ${getMode(process.cwd())}`);
+  console.log(`Current mode: ${getMode(project)} (${project})`);
   process.exit(0);
 }
 
@@ -22,5 +28,5 @@ if (!MODES.includes(requested)) {
   process.exit(1);
 }
 
-setMode(process.cwd(), requested);
-console.log(`Mode set to ${getMode(process.cwd())}`);
+setMode(project, requested);
+console.log(`Mode set to ${getMode(project)} (${project})`);
