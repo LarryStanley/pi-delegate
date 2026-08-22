@@ -1,91 +1,93 @@
-# pi-delegate：把「派工給 pi」從 skill 轉成 Claude Code Plugin
+# pi-delegate: turning "dispatching to pi" from a skill into a Claude Code Plugin
 
-> **歷史文件（2026-08-22）。** 這份 spec/plan 記錄的是 v0.1.0 當時的設計，其中把 provider 寫死成
-> 一台本機 omlx 伺服器、把兩個 Qwen 模型 id 當成必要模型的部分**已經不是現況**。
-> 現在的行為（三層 provider / model 解析、顧問式 pi-doctor）見 `docs/publish-prep-report.md`
-> 與 `README.md`。原文保留是為了留下當初的決策理由。
+> **Editor's note (2026-08-22).** This spec/plan documents the design as of v0.1.0. The parts that
+> hardcode the provider to a single local omlx server, and treat two specific Qwen model ids as
+> required models, **no longer reflect current behavior**. For current behavior (three-tier
+> provider/model resolution, the advisory `pi-doctor`), see `docs/publish-prep-report.md` and
+> `README.md`. The original text is kept as-is to preserve the reasoning behind the original
+> decisions.
 
-> 設計日期：2026-08-22
-> 狀態：待實作
-> 前身：`delegating-to-pi` skill（148 行 SKILL.md ＋ 約 1400 行 references ＋ 5 支 bash/ps1）
+> Design date: 2026-08-22
+> Status: pending implementation
+> Predecessor: the `delegating-to-pi` skill (148-line SKILL.md + ~1400 lines of references + 5 bash/ps1 scripts)
 
-## 1. 問題陳述
+## 1. Problem statement
 
-現有的 `delegating-to-pi` skill 在 Claude Code 裡「用不好」，原因分兩層，必須分開處理。
+The existing `delegating-to-pi` skill "doesn't work well" in Claude Code, for two separate reasons that have to be handled separately.
 
-### 1.1 機制層：從 Windows 移植過來後有五個 bug
+### 1.1 Mechanism layer: five bugs from the Windows port
 
-這些是實測（2026-08-22，macOS / M3 Ultra）確認的，不是推測：
+These were confirmed by hands-on testing (2026-08-22, macOS / M3 Ultra), not speculation:
 
-| # | Bug | 證據 | 影響 |
+| # | Bug | Evidence | Impact |
 |---|---|---|---|
-| 1 | provider 名字錯 | 腳本寫 `--provider omls`，`~/.pi/agent/models.json` 裡叫 `omlx` | `Error: Unknown provider "omls"` — 派工必定失敗 |
-| 2 | `timeout` 在 macOS 不存在 | `dispatch-pi.sh` 用 `timeout 1500`；本機 `timeout` / `gtimeout` 皆無 | 腳本第一行就掛 |
-| 3 | 預設模型未註冊 | `omlx` provider 只有 `Qwen3.6-35B-A3B-4bit`、`Qwen3.6-27B-DFlash-draft` | `Warning: not found, using custom model id` |
-| 4 | **`--thinking off` 是靜默空操作** | 承 #3：模型未註冊 → 缺 `reasoning: true` 與 `compat.chatTemplateKwargs.enable_thinking` | 這正是 skill description 自述的症狀「keeps reasoning forever even though thinking was turned off」 |
-| 5 | 註冊清單含副駕駛 | `Qwen3.6-27B-DFlash-draft` 是 DFlash drafter，直接呼叫回 500 | 誤選即失敗 |
+| 1 | Wrong provider name | The script writes `--provider omls`, but `~/.pi/agent/models.json` calls it `omlx` | `Error: Unknown provider "omls"` — dispatch fails every time |
+| 2 | `timeout` doesn't exist on macOS | `dispatch-pi.sh` uses `timeout 1500`; this machine has neither `timeout` nor `gtimeout` | The script dies on its first line |
+| 3 | Default model not registered | The `omlx` provider only has `Qwen3.6-35B-A3B-4bit` and `Qwen3.6-27B-DFlash-draft` | `Warning: not found, using custom model id` |
+| 4 | **`--thinking off` is a silent no-op** | Follows from #3: unregistered model → missing `reasoning: true` and `compat.chatTemplateKwargs.enable_thinking` | This is exactly the symptom the skill description reports about itself: "keeps reasoning forever even though thinking was turned off" |
+| 5 | The registered list includes a co-pilot model | `Qwen3.6-27B-DFlash-draft` is a DFlash drafter; calling it directly returns 500 | Pick it by mistake and it fails |
 
-**bug #4 的重要性**：這個 skill 描述了自己的 bug，卻把成因歸給模型。任何只搬運腳本的方案都會把它一起搬過去。
+**Why bug #4 matters**: this skill documents its own bug, but attributes the cause to the model. Any approach that just carries the scripts over will carry this bug over with it.
 
-> 現況備註：omlx server 端已於 2026-08-22 設定 `thinking_budget_tokens: 4096`，
-> 目前那是**唯一**在阻止 `Qwen3.8-27B-oQ4e-mtp` 無限思考的機制。客戶端 `--thinking off`
-> 修好之前不要移除它。
+> Current-state note: as of 2026-08-22 the omlx server side has `thinking_budget_tokens: 4096` set,
+> which is currently the **only** mechanism stopping `Qwen3.8-27B-oQ4e-mtp` from thinking forever. Do not
+> remove it before the client-side `--thinking off` is actually fixed.
 
-### 1.2 介面層：skill 是紀律文件，不是機制
+### 1.2 Interface layer: a skill is a discipline document, not a mechanism
 
-SKILL.md 是給 Claude 讀的散文規則，機制只有 5 支 bash。Claude 必須自己讀規則、自己組指令、自己判讀 `events.json`。
+SKILL.md is prose rules for Claude to read; the only mechanism is 5 bash scripts. Claude has to read the rules itself, assemble the command itself, and interpret `events.json` itself.
 
-而散文紀律有天花板 —— skill 自己記錄的實測：**規則寫著「只有三件事留給你」，同一輪仍有約八成字元是主模型打的**，且「每一件當下都有一個聽起來成立的理由」。
+And prose discipline has a ceiling — the skill's own recorded test result: **the rules say "only three things are left to you," yet in the same run about 80% of the characters were still typed by the primary model**, each time with "a reason that sounded valid in the moment."
 
-Plugin ＋ Hooks 能解的是這一層。
+Plugin + Hooks is what can fix this layer.
 
-## 2. 目標與非目標
+## 2. Goals and non-goals
 
-### 目標
+### Goals
 
-1. Claude 能以**結構化 tool 呼叫**派工給 pi，不必自己組 CLI 指令
-2. **同步**（派一件、等結果）與**非同步**（fan-out、完成時通知）都支援
-3. 支援**執行中介入**：steer / abort
-4. 進入 Claude context 的預設資訊壓到約 15 行；深入資訊**按需付費**
-5. 紀律可**強制執行**，而且可依專案開關
-6. **跨機器可攜** —— Windows → macOS 已證明會壞
+1. Claude can dispatch to pi via **structured tool calls**, without assembling CLI commands itself
+2. Support both **sync** (dispatch one, wait for the result) and **async** (fan-out, notify on completion)
+3. Support **mid-run intervention**: steer / abort
+4. Compress the default information entering Claude's context to about 15 lines; deeper information is **paid for on demand**
+5. Discipline can be **enforced**, and toggled per project
+6. **Portable across machines** — Windows → macOS has already proven it breaks
 
-### 非目標
+### Non-goals
 
-- 不上 plugin marketplace（個人跨機器使用）
-- 不取代 references/ 的內容（原樣保留，維持漸進式載入）
-- 不支援 omp（原 skill 提及的另一個 harness），只做 pi
+- Not published to the plugin marketplace (personal, cross-machine use)
+- Does not replace the contents of references/ (kept as-is, preserving progressive loading)
+- Does not support omp (the other harness the original skill mentions) — pi only
 
-## 3. 關鍵決策與理由
+## 3. Key decisions and rationale
 
-| 決策 | 選擇 | 理由 |
+| Decision | Choice | Rationale |
 |---|---|---|
-| 呼叫形狀 | 同步 ＋ 非同步都要 | 使用者明確要求 |
-| 紀律強度 | 三模式 `off` / `soft` / `strict`，可切換 | 有些專案根本不該讓 pi 介入 |
-| 模式作用域 | **專案層級**，切一次記住 | 同上；session 層級不夠 |
-| context 分層 | 第 0 層永遠回，第 1/2 層按需 | pi session 本來就存磁碟，drill-down 免費 |
-| 第 0 層是否帶 assistant 訊息 | **帶，截斷 1000 字元** | pi 常在最後說明改了什麼、任務書哪裡有歧義，省一次往返 |
-| 架構 | MCP server 起 `pi --mode rpc` 子行程 | 見下 |
+| Call shape | Both sync and async | Explicitly requested by the user |
+| Discipline strength | Three switchable modes: `off` / `soft` / `strict` | Some projects shouldn't let pi touch code at all |
+| Mode scope | **Project-level**, remembered after being set once | Same as above; session-level isn't enough |
+| Context tiering | Tier 0 always returned, tiers 1/2 on demand | pi sessions are already persisted to disk, so drill-down is free |
+| Whether tier 0 includes the assistant message | **Yes, truncated to 1000 characters** | pi often explains at the end what it changed or where the task book was ambiguous — this saves a round trip |
+| Architecture | MCP server spawns a `pi --mode rpc` child process | See below |
 
-### 為什麼是 MCP server ＋ 子行程（而非 SDK in-process，或純 `bin/`）
+### Why an MCP server + child process (rather than an in-process SDK, or plain `bin/`)
 
-- **steer / abort 需要持續握著 stdio**。Bash tool 每次呼叫都是新行程，做不到 → 純 `bin/` 方案交付不了「控制」
-- **行程隔離**：fan-out 8 份時，一份崩潰不該拖垮其他 7 份。SDK in-process 會
-- **可手打重現**：本文件 §1.1 那五個 bug 全靠手打指令逐一定位。SDK 方案出事時只能讀 server log
+- **steer / abort require holding stdio open continuously**. A Bash tool call is a fresh process every time, which can't do this → a plain `bin/` approach can't deliver "control"
+- **Process isolation**: when fanning out 8 dispatches, one crashing shouldn't take the other 7 down with it. An in-process SDK would
+- **Reproducible by hand**: every one of the five bugs in §1.1 of this document was pinned down by typing commands by hand, one at a time. With an SDK approach, when something goes wrong all you can do is read the server log
 
-## 4. Plugin 結構
+## 4. Plugin structure
 
 ```
 pi-delegate/
 ├── .claude-plugin/
 │   └── plugin.json
-├── .mcp.json                        MCP server 註冊
+├── .mcp.json                        MCP server registration
 ├── mcp/
-│   ├── server.js                    tool 定義與分派
-│   ├── dispatch.js                  spawn pi --mode rpc、持有 stdio、逾時 timer
-│   ├── verdict.js                   判決計算（§7）
-│   ├── registry.js                  session 註冊表：id → {pid, status, cwd, task_file}
-│   └── jsonl.js                     嚴格 LF 切分（見 §6 警告）
+│   ├── server.js                    tool definitions and dispatch
+│   ├── dispatch.js                  spawns pi --mode rpc, holds stdio, timeout timer
+│   ├── verdict.js                   verdict computation (§7)
+│   ├── registry.js                  session registry: id → {pid, status, cwd, task_file}
+│   └── jsonl.js                     strict LF splitting (see §6 warning)
 ├── hooks/
 │   ├── hooks.json
 │   ├── doctor-check.sh
@@ -93,52 +95,52 @@ pi-delegate/
 │   └── soft-nudge.sh
 ├── skills/
 │   ├── delegating-to-pi/
-│   │   ├── SKILL.md                 瘦身版（§10）
-│   │   └── references/              原樣沿用現有六份
+│   │   ├── SKILL.md                 slimmed-down version (§10)
+│   │   └── references/              existing six files carried over as-is
 │   ├── mode/SKILL.md                /pi:mode
 │   ├── probe/SKILL.md               /pi:probe
 │   └── doctor/SKILL.md              /pi:doctor
 ├── bin/
-│   └── pi-doctor                    環境自檢與修復（§8）
+│   └── pi-doctor                    environment self-check and repair (§8)
 ├── monitors/
-│   └── monitors.json                非同步完成通知
+│   └── monitors.json                async completion notifications
 └── README.md
 ```
 
-> ⚠️ `commands/`、`agents/`、`skills/`、`hooks/` 一律放 plugin **根目錄**，
-> 不可放進 `.claude-plugin/`。後者只放 `plugin.json`。
+> ⚠️ `commands/`, `agents/`, `skills/`, `hooks/` all go in the plugin's **root directory**,
+> never inside `.claude-plugin/`. The latter holds only `plugin.json`.
 
 ### plugin.json
 
 ```json
 {
   "name": "pi-delegate",
-  "description": "把實作與測試派給本機 pi（Qwen3.8 on omlx），並強制執行派工紀律",
+  "description": "Dispatch implementation and tests to a local pi (Qwen3.8 on omlx), and enforce dispatch discipline",
   "version": "0.1.0",
   "author": { "name": "stanley" }
 }
 ```
 
-## 5. MCP Tool 介面
+## 5. MCP tool interface
 
-| Tool | 參數 | 回傳 | 層 |
+| Tool | Parameters | Returns | Tier |
 |---|---|---|---|
-| `pi_dispatch` | `task_file`, `cwd`, `model?`, `mode=sync\|async`, `timeout_s?` | sync → 判決；async → `{session_id}` | 0 |
+| `pi_dispatch` | `task_file`, `cwd`, `model?`, `mode=sync\|async`, `timeout_s?` | sync → verdict; async → `{session_id}` | 0 |
 | `pi_status` | `session_id` | `{status, elapsed_s, current_tool, files_touched}` | 0 |
 | `pi_steer` | `session_id`, `message` | `{ok}` | — |
 | `pi_abort` | `session_id` | `{ok}` | — |
-| `pi_result` | `session_id` | 判決（async 完成後取回） | 0 |
-| `pi_transcript` | `session_id`, `filter=text\|tools\|last_n`, `n?` | 過濾後的對話片段 | 1 |
-| `pi_stats` | `session_id` | `get_session_stats` 原樣（tokens / cost / context） | 2 |
+| `pi_result` | `session_id` | verdict (retrieved after async completion) | 0 |
+| `pi_transcript` | `session_id`, `filter=text\|tools\|last_n`, `n?` | filtered conversation excerpt | 1 |
+| `pi_stats` | `session_id` | `get_session_stats` verbatim (tokens / cost / context) | 2 |
 
-**預設值**：`model` 預設 `Qwen3.8-27B-oQ4e-mtp`（dense）。`timeout_s` 預設 `1500`。
+**Defaults**: `model` defaults to `Qwen3.8-27B-oQ4e-mtp` (dense). `timeout_s` defaults to `1500`.
 
-**模型選擇規則**（沿用原 skill 實測結論，寫進 tool description）：
-編輯既有檔案一律 dense；只有「從零寫新檔案」才值得換 MoE（`Qwen3.6-35B-A3B-4bit`）換速度。
+**Model selection rule** (carried over from the original skill's tested conclusion, written into the tool description):
+always use dense for editing existing files; only switch to MoE (`Qwen3.6-35B-A3B-4bit`) for speed when writing a brand-new file from scratch.
 
-## 6. 行程模型
+## 6. Process model
 
-MCP server 常駐。每次 `pi_dispatch` 開一個子行程：
+The MCP server is long-running. Each `pi_dispatch` spawns one child process:
 
 ```
 pi --mode rpc \
@@ -148,65 +150,65 @@ pi --mode rpc \
    --no-context-files --no-skills --no-extensions
 ```
 
-子行程的工作目錄用 `spawn(..., { cwd })` 設定。
+The child process's working directory is set via `spawn(..., { cwd })`.
 
-> ⚠️ **pi 沒有 `--cwd` 旗標**（2026-08-22 對 `pi --help` 驗證）。
-> 原 skill 的 `references/orchestration.md` 裡那個 `--cwd` 是 **omp** 的旗標，
-> 不是 pi 的。照抄會直接 argparse 失敗。
+> ⚠️ **pi has no `--cwd` flag** (verified against `pi --help` on 2026-08-22).
+> The `--cwd` in the original skill's `references/orchestration.md` is a flag belonging to **omp**,
+> not pi. Copying it verbatim fails argparse outright.
 
-> 旗標的理由沿用原 `dispatch-pi.sh` 檔頭，**不重新推導**：
-> 不給 `bash`（給了會漫遊不動手）；`--no-context-files` 是必要不是最佳化
-> （實測：沒加 = 43 read / 0 write / 逾時；加了 = 93 秒完成）。
+> The rationale for the flags carries over from the original `dispatch-pi.sh` header, **not re-derived here**:
+> don't grant `bash` (granting it makes it wander instead of doing the work); `--no-context-files` is necessary, not an optimization
+> (measured: without it = 43 reads / 0 writes / timeout; with it = done in 93 seconds).
 
-> ⚠️ **刻意不帶 `--no-session`**（與原 `dispatch-pi.sh` 相異）。
-> 原腳本用它把 harness 重量降到最低，但 session 儲存是磁碟 I/O，
-> **不會進入模型的 context**，所以省不到 token。
-> 而 §5 的第 1/2 層 drill-down（`pi_transcript` / `pi_stats`）依賴 session 落在 `~/.pi/agent/sessions/` 才讀得到 ——
-> 帶了 `--no-session` 會讓 `pi_transcript` / `pi_stats` 在子行程結束後無資料可讀。
-> 改用 `--session-id <id>` 讓 session 可定址。
+> ⚠️ **Deliberately omits `--no-session`** (unlike the original `dispatch-pi.sh`).
+> The original script used it to keep the harness as lightweight as possible, but session storage is disk I/O —
+> it **never enters the model's context**, so it saves no tokens.
+> Meanwhile the tier-1/2 drill-down in §5 (`pi_transcript` / `pi_stats`) depends on the session landing in `~/.pi/agent/sessions/` to be readable at all —
+> passing `--no-session` would leave `pi_transcript` / `pi_stats` with nothing to read once the child process ends.
+> Use `--session-id <id>` instead, so the session is addressable.
 
-- **逾時由 server 的 timer 管，不呼叫 `timeout`** → 結構性消滅 bug #2，Windows / macOS 行為一致
-- `mode=sync`：阻塞到 `agent_settled`，回判決
-- `mode=async`：立刻回 `session_id`；完成時 append 一行到 `~/.claude/pi-delegate/events.log`
-- `monitors.json` 跑 `tail -F` 那個 log，每行 stdout 成為 Claude 的通知
+- **Timeout is managed by a timer on the server, not by calling `timeout`** → structurally eliminates bug #2; Windows / macOS behave identically
+- `mode=sync`: blocks until `agent_settled`, returns the verdict
+- `mode=async`: returns `session_id` immediately; appends one line to `~/.claude/pi-delegate/events.log` on completion
+- `monitors.json` runs `tail -F` on that log; each line of stdout becomes a notification to Claude
 
 ```json
 [
   {
     "name": "pi-dispatch-complete",
     "command": "tail -F ${HOME}/.claude/pi-delegate/events.log",
-    "description": "pi 派工完成通知"
+    "description": "Notification that a pi dispatch has completed"
   }
 ]
 ```
 
-### ⚠️ JSONL 解析
+### ⚠️ JSONL parsing
 
-pi 的 RPC 協定是**嚴格 LF 分隔**。文件明講**不可用 Node `readline`** —— 它也會在 JSON payload 內的 Unicode 分隔符處斷行，造成靜默資料損毀。
+pi's RPC protocol is **strictly LF-delimited**. The docs explicitly state **do not use Node's `readline`** — it will also break lines at Unicode separator characters inside a JSON payload, causing silent data corruption.
 
-`mcp/jsonl.js` 必須只切 `\n`，並剝除可選的 `\r`。
+`mcp/jsonl.js` must split only on `\n`, and strip an optional trailing `\r`.
 
-### 相關事件
+### Relevant events
 
-| 事件 | 用途 |
+| Event | Purpose |
 |---|---|
-| `agent_settled` | 整個 session 定案，無自動續跑 → 判決的權威訊號 |
-| `tool_execution_start` | `toolCallId` / `toolName` / `args` → 計數與漫遊偵測 |
+| `agent_settled` | The whole session has finalized, no auto-continuation → the authoritative signal for the verdict |
+| `tool_execution_start` | `toolCallId` / `toolName` / `args` → used for counting and wander detection |
 | `tool_execution_end` | `isError` |
-| `message_end` | 取最後一則 assistant 訊息 |
+| `message_end` | Used to get the last assistant message |
 
-## 7. 判決計算（第 0 層）
+## 7. Verdict computation (tier 0)
 
-原 skill 把三個判讀陷阱寫成散文交給 Claude。**寫成散文每次都可能錯，寫成程式碼只會錯一次。**
+The original skill wrote three interpretation traps as prose for Claude to handle. **Written as prose, it can go wrong every single time; written as code, it can only go wrong once.**
 
-| 陷阱 | 程式做法 |
+| Trap | Code-based approach |
 |---|---|
-| 一次 tool call 噴 3–4 事件 → 誤數 | 以 `tool_execution_start.toolCallId` 去重後再計數 |
-| 「被中止」與「失敗」處置相反 | 三步 enum，順序不可顛倒：`agent_settled` 到了沒 → grep 目標字串 → `git status` |
-| 「逾時」≠「什麼都沒做」 | 自動附 `git diff --stat` |
-| 漫遊偵測 | `read` 過的檔案 ∖ 任務書點名的檔案 |
+| A single tool call fires 3–4 events → miscounting | Deduplicate by `tool_execution_start.toolCallId` before counting |
+| "Aborted" and "failed" require opposite handling | A three-step enum, order must not be reversed: has `agent_settled` arrived → grep for the target string → `git status` |
+| "Timeout" ≠ "did nothing" | Automatically attach `git diff --stat` |
+| Wander detection | files `read` minus files named in the task book |
 
-### 回傳格式（固定約 15 行）
+### Return format (fixed at roughly 15 lines)
 
 ```
 status:                 completed | timeout | aborted | failed
@@ -217,121 +219,121 @@ git_diff_stat:          2 files changed, 47 insertions(+), 3 deletions(-)
 duration_s:             93
 tokens:                 in 4210 / out 890
 session_id:             a1b2c3
-last_message:           <最後一則 assistant 訊息，截斷 1000 字元>
+last_message:           <the last assistant message, truncated to 1000 characters>
 ```
 
-`last_message` 超過 1000 字元時截斷並標記，完整內容留給 `pi_transcript`。
+When `last_message` exceeds 1000 characters it is truncated and marked; the full content is left for `pi_transcript`.
 
-## 8. 可攜性：`bin/pi-doctor`
+## 8. Portability: `bin/pi-doctor`
 
-冪等檢查與修復，這是跨機器搬遷的保險。
+Idempotent checks and fixes — this is the insurance policy for moving across machines.
 
-| 檢查 | 修復動作 | 對應 bug |
+| Check | Fix action | Corresponding bug |
 |---|---|---|
-| `~/.pi/agent/models.json` 有 `omlx` provider | 建立，`baseUrl: http://127.0.0.1:8000/v1` | #1 |
-| 目標模型已註冊 | 加入 models 陣列 | #3 |
-| 模型有 `reasoning: true` | 補上 | #4 |
-| 模型有 `compat.chatTemplateKwargs.enable_thinking: {"$var": "thinking.enabled"}` | 補上 | #4 |
-| drafter 類模型標記不可派工 | 標記 `x-pi-delegate-forbidden: true`，`pi_dispatch` 拒絕 | #5 |
-| omlx server 存活 | 只報告，不自動啟動 | — |
+| `~/.pi/agent/models.json` has an `omlx` provider | Create it, `baseUrl: http://127.0.0.1:8000/v1` | #1 |
+| Target model is registered | Add it to the models array | #3 |
+| Model has `reasoning: true` | Add it | #4 |
+| Model has `compat.chatTemplateKwargs.enable_thinking: {"$var": "thinking.enabled"}` | Add it | #4 |
+| Drafter-type models are flagged non-dispatchable | Flag with `x-pi-delegate-forbidden: true`; `pi_dispatch` refuses | #5 |
+| omlx server is alive | Report only, do not auto-start | — |
 
-- `pi-doctor --check`：唯讀，回結構化報告
-- `pi-doctor --fix`：實際寫入，寫入前備份 `models.json`
+- `pi-doctor --check`: read-only, returns a structured report
+- `pi-doctor --fix`: actually writes, backing up `models.json` first
 
-`SessionStart` hook 只跑 `--check`。
+The `SessionStart` hook only runs `--check`.
 
-## 9. Hooks 與模式
+## 9. Hooks and modes
 
-### 狀態
+### State
 
-`~/.claude/pi-delegate/modes.json`，key 為專案絕對路徑：
+`~/.claude/pi-delegate/modes.json`, keyed by the project's absolute path:
 
 ```json
 { "/path/to/project-a": "strict", "/path/to/project-b": "off" }
 ```
 
-未列出的專案預設 `soft`。放家目錄而非 repo：不污染專案、不必 gitignore。代價是換機器要重設一次（已接受）。
+Projects not listed default to `soft`. Kept in the home directory rather than the repo: doesn't pollute the project, doesn't need a gitignore entry. The cost is having to reset it once per machine switch (accepted).
 
 ### hooks.json
 
-| Hook | 事件 | matcher | 行為 |
+| Hook | Event | matcher | Behavior |
 |---|---|---|---|
-| `doctor-check` | `SessionStart` | — | 跑 `pi-doctor --check`，用 `additionalContext` 注入「當前模式 ＋ 設定問題」 |
-| `mode-guard` | `PreToolUse` | `Write\|Edit` | **strict**：命中受保護路徑 → `permissionDecision: "deny"` |
-| `soft-nudge` | `PostToolUse` | `Write\|Edit` | **soft**：注入 `additionalContext` 提醒 |
+| `doctor-check` | `SessionStart` | — | Runs `pi-doctor --check`, injects "current mode + configuration issues" via `additionalContext` |
+| `mode-guard` | `PreToolUse` | `Write\|Edit` | **strict**: hits a protected path → `permissionDecision: "deny"` |
+| `soft-nudge` | `PostToolUse` | `Write\|Edit` | **soft**: injects a reminder via `additionalContext` |
 
-`off` 模式下兩個 hook 都直接 `exit 0`，不做任何事。
+In `off` mode both hooks just `exit 0` and do nothing.
 
-### strict 的保護範圍（保守白名單）
+### strict's protection scope (a conservative whitelist)
 
-**擋**：已存在的產品碼與測試檔 —— `src/**` 底下的 `.ts` / `.tsx` / `.js` / `.svelte` / `.py`，含 `*.test.*` / `*.spec.*`。
+**Blocked**: existing production code and test files — `.ts` / `.tsx` / `.js` / `.svelte` / `.py` under `src/**`, including `*.test.*` / `*.spec.*`.
 
-**放行**（一律不擋）：
-- 全新檔案（路徑不存在）
-- `tasks/**`、`scripts/**`、`docs/**`
-- 所有 `.md`
-- config 檔（`*.json` / `*.toml` / `*.yaml` / `*.yml` / dotfiles）
+**Allowed** (never blocked):
+- Brand-new files (path doesn't exist)
+- `tasks/**`, `scripts/**`, `docs/**`
+- All `.md` files
+- Config files (`*.json` / `*.toml` / `*.yaml` / `*.yml` / dotfiles)
 
-deny 的 `permissionDecisionReason` 要直接給出替代動作，例如：
-「這是產品碼。寫一份任務書到 `tasks/` 再用 `pi_dispatch` 派工。要親手改請先 `/pi:probe`。」
+The `permissionDecisionReason` for a deny must give a concrete alternative action directly, for example:
+"This is production code. Write a task book to `tasks/` and dispatch it with `pi_dispatch`. To edit it by hand, run `/pi:probe` first."
 
-### 探針例外
+### Probe exception
 
-`/pi:probe` 設一次性放行旗標，下一個 Write/Edit 通過後自動關閉。比「10 行上限」自動計數更好稽核。
+`/pi:probe` sets a one-shot allow flag, which turns itself off automatically after the next Write/Edit passes through. This is easier to audit than an automatic "10-line cap" counter.
 
-## 10. Skill 瘦身
+## 10. Slimming down the skill
 
-`strict` 模式下紀律由 hook 執行，散文不必再承擔強制力。SKILL.md 從 148 行縮為：
+Under `strict` mode, discipline is enforced by the hook, so the prose no longer needs to carry enforcement weight. SKILL.md shrinks from 148 lines down to:
 
-- 四路分流表（**唯一一定要做對的決定**）
-- 「查表就能決定的不要派，寫腳本」判準 —— 這條 hook 管不到，必須留在散文
-- 指向 MCP tools 的說明
-- 現有的「往下讀」references 索引
+- A four-way routing table (**the one decision that absolutely has to be made correctly**)
+- The criterion "if a lookup table can decide it, don't dispatch — write a script instead" — a hook can't enforce this, so it has to stay in prose
+- An explanation pointing to the MCP tools
+- The existing "read further" references index
 
-**移除**：紅旗清單、「你自己動手之前先過這張表」—— 那些已由 `mode-guard` 執行。
-**保留**：全部六份 references 原樣不動。
+**Removed**: the red-flag checklist, "run through this table before touching it yourself" — those are now enforced by `mode-guard`.
+**Kept**: all six references files, unchanged.
 
-## 11. 錯誤處理
+## 11. Error handling
 
-| 情況 | 行為 |
+| Situation | Behavior |
 |---|---|
-| MCP server 起不來 | `/plugin` Errors 分頁可見；tool 呼叫回明確錯誤，不靜默失敗 |
-| pi 子行程 spawn 失敗 | `status: failed`，附 stderr |
-| 逾時 | `status: timeout`，**仍附 `git diff --stat`**（逾時 ≠ 沒做事） |
-| `pi-doctor --check` 發現問題 | SessionStart 注入警告，但**不阻擋** session |
-| 派工目標是 drafter 模型 | `pi_dispatch` 直接拒絕，不送出請求 |
-| `session_id` 不存在 | 明確錯誤，列出目前有效的 session |
+| MCP server fails to start | Visible on the `/plugin` Errors tab; tool calls return an explicit error, never fail silently |
+| pi child process fails to spawn | `status: failed`, with stderr attached |
+| Timeout | `status: timeout`, **still attaches `git diff --stat`** (timeout ≠ nothing was done) |
+| `pi-doctor --check` finds a problem | SessionStart injects a warning, but **does not block** the session |
+| Dispatch target is a drafter model | `pi_dispatch` refuses outright, request never sent |
+| `session_id` doesn't exist | Explicit error, listing the currently valid sessions |
 
-## 12. 驗證方式
+## 12. Verification approach
 
 ```bash
 claude plugin validate ./pi-delegate
 claude --plugin-dir ./pi-delegate
 ```
 
-逐項檢查：
+Item-by-item checks:
 
-1. **MCP tools** —— `pi_dispatch` 一份最小任務書，確認回傳是 15 行判決而非原始 JSON
-2. **Hooks** —— 三個模式各觸發一次 Write，比對 debug log 的 matched hooks 與 exit code
-3. **strict 誤擋** —— 對白名單各類路徑各寫一次，確認全部放行
-4. **判決正確性** —— 刻意製造 timeout / abort / failed 三種情況，確認 enum 分對
-5. **漫遊偵測** —— 任務書只點名 A 檔，觀察 pi 讀了 B 檔時是否列入 `files_read_unrequested`
-6. **`--thinking off` 真的生效** —— `pi-doctor --fix` 後對照 omlx server log 的 `reasoning_content` 長度
+1. **MCP tools** — dispatch a minimal task book with `pi_dispatch`, confirm the return is a 15-line verdict, not raw JSON
+2. **Hooks** — trigger one Write under each of the three modes, compare matched hooks and exit codes in the debug log
+3. **strict false-blocks** — write once to each category of whitelisted path, confirm all are allowed
+4. **Verdict correctness** — deliberately induce the timeout / abort / failed conditions, confirm the enum classifies them correctly
+5. **Wander detection** — a task book that names only file A; observe whether pi reading file B gets listed in `files_read_unrequested`
+6. **`--thinking off` actually works** — after `pi-doctor --fix`, compare against the length of `reasoning_content` in the omlx server log
 
-第 4 項要**種一個真的違規進去看它會不會紅**，並驗證乾淨時不亂報 —— 沿用原 skill 對審查有效性的判準。
+Item 4 must **plant a real violation and check it actually turns red**, and verify it doesn't false-positive when clean — this carries over the original skill's criterion for review validity.
 
-## 13. 實作順序
+## 13. Implementation order
 
-1. `pi-doctor` ＋ `plugin.json`（先讓環境是對的，否則後面每一步都在對抗 §1.1 的五個 bug）
-2. `mcp/` 的 `jsonl.js` → `dispatch.js` → `verdict.js` → `server.js`（sync 路徑）
-3. async 路徑 ＋ `monitors.json`
-4. `hooks/` 三支 ＋ 模式狀態
-5. `/pi:mode`、`/pi:probe`、`/pi:doctor`
-6. SKILL.md 瘦身
+1. `pi-doctor` + `plugin.json` (get the environment right first, otherwise every later step is fighting the five bugs in §1.1)
+2. `mcp/`'s `jsonl.js` → `dispatch.js` → `verdict.js` → `server.js` (the sync path)
+3. The async path + `monitors.json`
+4. The three `hooks/` scripts + mode state
+5. `/pi:mode`, `/pi:probe`, `/pi:doctor`
+6. Slimming down SKILL.md
 
-第 1 步完成後就該能用現有的 `dispatch-pi.sh`（改掉 provider 名與 timeout）驗證派工本身是通的，再往上疊。
+Once step 1 is done, the existing `dispatch-pi.sh` (with the provider name and timeout fixed) should be enough to verify dispatch itself works, before building further on top of it.
 
-## 14. 未決事項
+## 14. Open questions
 
-- **模型路由自動化**：目前 `model` 由呼叫端指定，tool description 寫明 dense/MoE 規則。是否要讓 `pi_dispatch` 依「目標檔存在與否」自動路由，待實作後觀察誤判率再定。
-- **fan-out 併發寬度**：原 skill 建議輕任務 8、重任務 2–3。是否由 server 統一節流，或維持呼叫端自理，待第 3 步實作時決定。
+- **Automating model routing**: currently `model` is specified by the caller, with the dense/MoE rule spelled out in the tool description. Whether `pi_dispatch` should auto-route based on "does the target file exist" is left for after implementation, once we've observed the misrouting rate.
+- **Fan-out concurrency width**: the original skill recommends 8 for light tasks, 2–3 for heavy ones. Whether the server should throttle this centrally, or leave it to the caller, is to be decided during step 3's implementation.
