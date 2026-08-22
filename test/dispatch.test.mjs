@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildPiArgs, dispatch } from "../src/dispatch.mjs";
@@ -122,21 +122,63 @@ test("agent_end 之後子行程仍存活（真實 pi RPC 行為）也要在遠�
   );
 });
 
-test("abort 在終局事件之前搶到 settled，即使子行程之後仍會吐 agent_end 也回傳 aborted 而非 completed", async () => {
-  // 對應 review 指出的 race：abort() 跟 settleFromTerminalEvent 都會呼叫
-  // killWithEscalation()，兩邊都沒有互斥的話會有重複 SIGTERM / 孤兒
-  // graceTimer 的風險。這裡用 --stay-alive（跟前一個測試一樣，agent_end
-  // 之後子行程不會自己死）來確保就算事件流已經吐出終局事件，只要 abort()
-  // 先設定 settled，判決仍必須是 "aborted"，不能被之後才處理到的 agent_end
-  // 蓋掉變成 "completed"。
+// NOTE (round-2 review correction): the previous version of this test
+// asserted `status === "aborted"` after calling `handle.abort()` right
+// after `dispatch()` returned. That is NOT a race — `dispatch()` and
+// `abort()` contain no `await`s before the SIGTERM is sent, so abort()
+// always runs and sets `aborted = true` well before the spawned fake-pi
+// process has even started, let alone emitted agent_end. The assertion
+// passed identically whether or not the `settled` guard existed in
+// abort() — it never exercised the guard it was written to prove. See
+// task-10-report.md round-2 section for the full explanation.
+//
+// This version tests the guard directly instead of inferring it from
+// `status`: it lets the dispatch genuinely settle via a terminal event
+// first (so `settleFromTerminalEvent()` has already flipped `settled`
+// and already sent one real SIGTERM to the child), and only then calls
+// `handle.abort()`. Without the guard, abort() would unconditionally
+// call killWithEscalation() again — a second, distinguishable SIGTERM.
+// The fixture's `--sigterm-log` counts real signal deliveries, so this
+// observes the actual OS-level effect of the guard, not just the
+// resulting status field (which — honestly — is "completed" here, not
+// "aborted": abort() arriving after the verdict has already resolved
+// is a no-op by design, it cannot retroactively change a settled
+// Promise. That "abort while genuinely still running returns aborted"
+// behaviour is unchanged and already covered by the unrelated "abort
+// 回傳 aborted 判決" test above, which uses --hang and never triggers a
+// terminal event at all).
+test("abort() 在終局事件已經 settle 之後呼叫，settled 互斥閘門要擋掉第二次 SIGTERM", async () => {
   const { dir, file } = tmpTask();
+  const logDir = mkdtempSync(join(tmpdir(), "pi-sigterm-"));
+  const sigtermLog = join(logDir, "sigterm.log");
   const { handle, done } = await dispatch({
     taskFile: file, cwd: dir, model: "M", timeoutS: 15,
-    sessionId: "s8", piCommand: [...FAKE_PI, "--stay-alive"], gitDiffStat: "",
+    sessionId: "s8",
+    piCommand: [...FAKE_PI, "--stay-alive", `--sigterm-log=${sigtermLog}`],
+    gitDiffStat: "",
   });
-  await handle.abort();
+
+  // 終局事件會在這裡讓 settleFromTerminalEvent() 跑完：settled 翻 true、
+  // 判決定案、送出第一次 SIGTERM。子行程因為註冊了 --sigterm-log 的
+  // handler 而不會真的死於這第一次 SIGTERM，繼續活著等我們檢查。
   const verdict = await done;
-  assert.equal(verdict.status, "aborted");
+  assert.equal(verdict.status, "completed");
+
+  // 這時 settled 已經是 true。沒有互斥閘門的話，這裡會再送一次 SIGTERM。
+  await handle.abort();
+
+  // 等超過 dispatch.mjs 內部的 SIGKILL grace period（2000ms），讓任何
+  // 「第二次 killWithEscalation() 又各自排了一個 graceTimer」的效果有
+  // 機會真的發生並被 --sigterm-log 記下來，同時也讓子行程被 SIGKILL
+  // 收尾，不留殭屍行程。
+  await new Promise((resolve) => setTimeout(resolve, 2500));
+
+  const received = readFileSync(sigtermLog, "utf8").trim().split("\n").filter(Boolean);
+  assert.equal(
+    received.length,
+    1,
+    `expected exactly 1 SIGTERM (settled guard should block abort()'s), got ${received.length}: ${JSON.stringify(received)}`,
+  );
 });
 
 test("子行程忽略 SIGTERM 時，逾時仍靠 SIGKILL escalation 結束並回傳 timeout", async () => {

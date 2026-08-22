@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // pi --mode rpc 的最小替身。只實作測試需要的行為。
+import { appendFileSync } from "node:fs";
+
 const args = process.argv.slice(2);
 const has = (flag) => args.includes(flag);
 const valueOf = (prefix) => {
@@ -10,6 +12,23 @@ const valueOf = (prefix) => {
 const emit = (event) => process.stdout.write(`${JSON.stringify(event)}\n`);
 
 emit({ type: "session", version: 3, id: "fake", cwd: process.cwd() });
+
+// --sigterm-log=<path>：每收到一次 SIGTERM 就在該檔案追加一行。獨立於
+// --ignore-sigterm/--stay-alive 之外運作，用來讓測試從外部觀察 dispatch()
+// 到底送了幾次 SIGTERM —— 驗證 abort() 跟 settleFromTerminalEvent() 的
+// `settled` 互斥閘門有沒有真的擋掉第二次 killWithEscalation()。註冊監聽器
+// 這件事本身就會讓 Node 不對 SIGTERM 執行預設的終止行為，所以子行程不會
+// 自己死，只能靠之後真的送達的 SIGKILL 收尾。
+const sigtermLog = valueOf("--sigterm-log=");
+if (sigtermLog) {
+  process.on("SIGTERM", () => {
+    try {
+      appendFileSync(sigtermLog, "SIGTERM\n");
+    } catch {
+      // 忽略寫檔錯誤，不影響信號計數這個主要目的
+    }
+  });
+}
 
 if (has("--ignore-sigterm")) {
   // 吃掉 SIGTERM，逼 dispatch() 的逾時/中止邏輯必須真的送出 SIGKILL 才能
