@@ -1,0 +1,7 @@
+[
+  {
+    "name": "pi-dispatch-complete",
+    "command": "tail -n 0 -F ${HOME}/.claude/pi-delegate/events.log",
+    "description": "pi 非同步派工完成通知"
+  }
+]
