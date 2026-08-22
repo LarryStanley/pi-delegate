@@ -76,6 +76,11 @@ test("大小寫正規化不會弄壞既有的豁免", () => {
 });
 
 // --- [I5] cwd 落在 src/ 底下時，relative() 會把 src/ 吃掉 ---
+//
+// 這三個案例走的是「找不到任何專案標記（.git / package.json …）」的保守後路：
+// 沒有注入 markerExists，而 /proj 這些路徑在檔案系統上不存在，所以 findProjectRoot
+// 回 null，isProtectedPath 退回舊的 cwd-segment 判準。找得到根目錄的正常情況由
+// 下面「cwd 就在專案自己的 src/ 裡時仍受保護」那一組守著。
 
 test("cwd 就在 src 裡時仍受保護（否則整個 session 靜默失去防護）", () => {
   const inSrc = (p, cwd) => isProtectedPath(p, { cwd, exists: () => true });
@@ -95,4 +100,56 @@ test("cwd 在 src 裡時，豁免規則照舊生效", () => {
 test("cwd 不在 src 裡時，src 之外的原始碼仍然放行（沒有被 I5 波及）", () => {
   assert.equal(guarded("/proj/lib/foo.ts"), false);
   assert.equal(guarded("/proj/foo.ts"), false);
+});
+
+// --- 專案根目錄底下的 `src/`，不是絕對路徑裡任何一段 `src` ---
+//
+// 回歸案例：一個放在 `~/src/` 底下的專案（`~/src/myproj`）。舊版拿 cwd 的每一段
+// 去比對 `src`，於是整棵樹都被當成受保護 —— 連 `lib/foo.ts` 這種明明不在專案
+// `src/` 裡的檔案也擋。現在先用 ROOT_MARKERS 找出專案根目錄，再拿根目錄算相對路徑。
+
+const HOME_SRC_ROOT = "/home/u/src/myproj";
+// markerExists 模擬「專案根目錄有 .git」。exists 是「這個檔案存在嗎」，兩者是
+// 不同的問題，所以是兩個獨立的注入點（合成一個的話，測試裡的 exists:()=>true
+// 會讓每一層目錄都看起來像專案根目錄）。
+const hasGitAt = (root) => (p) => p === `${root}/.git`;
+
+test("放在 ~/src/ 底下的專案，其 lib/ 不再被當成受保護（回歸）", () => {
+  assert.equal(
+    isProtectedPath(`${HOME_SRC_ROOT}/lib/foo.ts`, {
+      cwd: HOME_SRC_ROOT, exists: () => true, markerExists: hasGitAt(HOME_SRC_ROOT),
+    }),
+    false,
+  );
+});
+
+test("放在 ~/src/ 底下的專案，根目錄的 .ts 也不再被誤擋", () => {
+  assert.equal(
+    isProtectedPath(`${HOME_SRC_ROOT}/foo.ts`, {
+      cwd: HOME_SRC_ROOT, exists: () => true, markerExists: hasGitAt(HOME_SRC_ROOT),
+    }),
+    false,
+  );
+});
+
+test("同一個專案自己的 src/ 照樣受保護", () => {
+  assert.equal(
+    isProtectedPath(`${HOME_SRC_ROOT}/src/foo.ts`, {
+      cwd: HOME_SRC_ROOT, exists: () => true, markerExists: hasGitAt(HOME_SRC_ROOT),
+    }),
+    true,
+  );
+});
+
+test("cwd 就在專案自己的 src/ 裡時仍受保護（找得到根目錄的情況）", () => {
+  const inSrc = (p, cwd) => isProtectedPath(p, { cwd, exists: () => true, markerExists: hasGitAt("/proj") });
+  assert.equal(inSrc("/proj/src/foo.ts", "/proj/src"), true);
+  assert.equal(inSrc("/proj/src/deep/foo.ts", "/proj/src/deep"), true);
+  assert.equal(inSrc("/proj/lib/foo.ts", "/proj/src"), false);
+});
+
+test("專案根目錄的判準不只 .git（package.json 等 manifest 也算）", () => {
+  const byManifest = (p) => p === "/proj/package.json";
+  assert.equal(isProtectedPath("/proj/src/foo.ts", { cwd: "/proj/src", exists: () => true, markerExists: byManifest }), true);
+  assert.equal(isProtectedPath("/proj/lib/foo.ts", { cwd: "/proj/src", exists: () => true, markerExists: byManifest }), false);
 });
