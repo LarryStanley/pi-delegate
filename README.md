@@ -15,6 +15,10 @@ claude --plugin-dir /path/to/pi-delegate
 
 Requires Node ≥ 22 and a `pi` installation that is already set up.
 
+Then run `/pi-delegate:setup` for a guided first-run walkthrough: it checks `pi` and its
+provider, explains the discipline modes and asks which one you want, offers to fix anything
+fixable, and offers a verification dispatch before you start using the tools for real.
+
 ## Configuration: nothing is required by default
 
 `pi_dispatch` **specifies no provider or model**, so pi uses your own default
