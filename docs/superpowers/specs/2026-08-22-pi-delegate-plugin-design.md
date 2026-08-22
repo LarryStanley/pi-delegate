@@ -3,9 +3,8 @@
 > **Editor's note (2026-08-22).** This spec/plan documents the design as of v0.1.0. The parts that
 > hardcode the provider to a single local omlx server, and treat two specific Qwen model ids as
 > required models, **no longer reflect current behavior**. For current behavior (three-tier
-> provider/model resolution, the advisory `pi-doctor`), see `docs/publish-prep-report.md` and
-> `README.md`. The original text is kept as-is to preserve the reasoning behind the original
-> decisions.
+> provider/model resolution, the advisory `pi-doctor`), see `README.md`. The original text is
+> kept as-is to preserve the reasoning behind the original decisions.
 
 > Design date: 2026-08-22
 > Status: pending implementation
