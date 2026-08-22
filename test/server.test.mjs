@@ -81,7 +81,7 @@ test("every tool has a non-empty description and an inputSchema", () => {
   }
 });
 
-test("sync 派工回傳格式化判決而非原始 JSON", async () => {
+test("a sync dispatch returns a formatted verdict, not raw JSON", async () => {
   const task = tmpFile("TASK.md");
   writeFileSync(task, "Modify a.ts");
   const { handlers } = setup(fakeDispatch());
@@ -90,7 +90,7 @@ test("sync 派工回傳格式化判決而非原始 JSON", async () => {
   assert.ok(!result.content[0].text.trimStart().startsWith("{"));
 });
 
-test("async 派工立刻回 session_id", async () => {
+test("an async dispatch returns a session_id immediately", async () => {
   const task = tmpFile("TASK.md");
   writeFileSync(task, "Modify a.ts");
   const { handlers } = setup(fakeDispatch());
@@ -98,7 +98,7 @@ test("async 派工立刻回 session_id", async () => {
   assert.match(result.content[0].text, /session_id/);
 });
 
-test("async 完成後寫一行到 events.log", async () => {
+test("an async dispatch writes one line to events.log once it finishes", async () => {
   const task = tmpFile("TASK.md");
   writeFileSync(task, "Modify a.ts");
   const { handlers, eventsLogPath } = setup(fakeDispatch());
@@ -108,7 +108,7 @@ test("async 完成後寫一行到 events.log", async () => {
   assert.match(readFileSync(eventsLogPath, "utf8"), /completed/);
 });
 
-test("派工給 drafter 模型會被拒絕且不呼叫 dispatch", async () => {
+test("dispatching to a drafter model is rejected and never calls dispatch", async () => {
   const task = tmpFile("TASK.md");
   writeFileSync(task, "Modify a.ts");
   let called = false;
@@ -203,7 +203,7 @@ test("the config timeout_s applies when none is specified", async () => {
   assert.equal(seen[0].timeoutS, 42);
 });
 
-test("任務書不存在時回錯誤且不呼叫 dispatch", async () => {
+test("a missing task book returns an error and never calls dispatch", async () => {
   let called = false;
   const { handlers } = setup(async (...a) => {
     called = true;
@@ -214,14 +214,14 @@ test("任務書不存在時回錯誤且不呼叫 dispatch", async () => {
   assert.equal(called, false);
 });
 
-test("未知的 session_id 回錯誤並列出有效 id", async () => {
+test("an unknown session_id returns an error listing the valid ids", async () => {
   const { handlers } = setup(fakeDispatch());
   const result = await handlers.pi_result({ session_id: "ghost" });
   assert.equal(result.isError, true);
   assert.match(result.content[0].text, /ghost/);
 });
 
-test("pi_result 取回 async 派工的判決", async () => {
+test("pi_result retrieves the verdict of an async dispatch", async () => {
   const task = tmpFile("TASK.md");
   writeFileSync(task, "Modify a.ts");
   const { handlers } = setup(fakeDispatch());
@@ -232,7 +232,7 @@ test("pi_result 取回 async 派工的判決", async () => {
   assert.match(result.content[0].text, /status:\s+completed/);
 });
 
-test("pi_result 對 reject 的 done 回傳失敗判決而非拋出錯誤", async () => {
+test("pi_result returns a failed verdict rather than throwing when done rejects", async () => {
   const task = tmpFile("TASK.md");
   writeFileSync(task, "Modify a.ts");
   // rejects on a later tick so the registry's `verdict` field is still null
@@ -276,8 +276,8 @@ async function dispatchAndGetSessionId(handlers, task, mode = "async") {
   return started.content[0].text.match(/session_id:\s*(\S+)/)[1];
 }
 
-// [I8] 欄位名對齊 spec §5：{status, elapsed_s, current_tool, files_touched}
-test("pi_status 對已完成的派工回傳 spec §5 的四個欄位", async () => {
+// [I8] field names aligned with spec §5: {status, elapsed_s, current_tool, files_touched}
+test("pi_status returns the four spec §5 fields for a completed dispatch", async () => {
   const task = tmpFile("TASK.md");
   writeFileSync(task, "Modify a.ts");
   const { handlers } = setup(fakeDispatch());
@@ -291,7 +291,7 @@ test("pi_status 對已完成的派工回傳 spec §5 的四個欄位", async () 
   assert.deepEqual(parsed.files_touched, ["a.ts"]);
 });
 
-test("pi_status 對還在跑的派工回傳 running / 進行中的工具 / 已經寫過的檔", async () => {
+test("pi_status returns running / the tool in progress / files already written for a dispatch still running", async () => {
   const task = tmpFile("TASK.md");
   writeFileSync(task, "Modify a.ts");
   const events = [
@@ -305,7 +305,7 @@ test("pi_status 對還在跑的派工回傳 running / 進行中的工具 / 已�
       state: () => ({ running: true, elapsed_s: 7 }),
       events,
     },
-    done: new Promise(() => {}), // 永不 settle：還在跑
+    done: new Promise(() => {}), // never settles: still running
   });
   const { handlers } = setup(dispatchFn);
   const sessionId = await dispatchAndGetSessionId(handlers, task);
@@ -318,7 +318,7 @@ test("pi_status 對還在跑的派工回傳 running / 進行中的工具 / 已�
   });
 });
 
-test("pi_status 對未知 session_id 回錯誤並列出有效 id", async () => {
+test("pi_status returns an error listing the valid id for an unknown session_id", async () => {
   const task = tmpFile("TASK.md");
   writeFileSync(task, "Modify a.ts");
   const { handlers } = setup(fakeDispatch());
@@ -326,10 +326,10 @@ test("pi_status 對未知 session_id 回錯誤並列出有效 id", async () => {
   const result = await handlers.pi_status({ session_id: "ghost" });
   assert.equal(result.isError, true);
   assert.match(result.content[0].text, /ghost/);
-  assert.ok(result.content[0].text.includes(knownId), "應列出有效的 session id");
+  assert.ok(result.content[0].text.includes(knownId), "should list a valid session id");
 });
 
-test("pi_steer 把訊息送進 handle.steer", async () => {
+test("pi_steer sends the message into handle.steer", async () => {
   const task = tmpFile("TASK.md");
   writeFileSync(task, "Modify a.ts");
   const steerCalls = [];
@@ -344,12 +344,12 @@ test("pi_steer 把訊息送進 handle.steer", async () => {
   });
   const { handlers } = setup(dispatchFn);
   const sessionId = await dispatchAndGetSessionId(handlers, task);
-  const result = await handlers.pi_steer({ session_id: sessionId, message: "改用 async/await" });
-  assert.deepEqual(steerCalls, ["改用 async/await"]);
+  const result = await handlers.pi_steer({ session_id: sessionId, message: "switch to async/await" });
+  assert.deepEqual(steerCalls, ["switch to async/await"]);
   assert.match(result.content[0].text, /Sent:/);
 });
 
-test("pi_steer 對未知 session_id 回錯誤", async () => {
+test("pi_steer returns an error for an unknown session_id", async () => {
   const task = tmpFile("TASK.md");
   writeFileSync(task, "Modify a.ts");
   const { handlers } = setup(fakeDispatch());
@@ -357,10 +357,10 @@ test("pi_steer 對未知 session_id 回錯誤", async () => {
   const result = await handlers.pi_steer({ session_id: "ghost", message: "hi" });
   assert.equal(result.isError, true);
   assert.match(result.content[0].text, /ghost/);
-  assert.ok(result.content[0].text.includes(knownId), "應列出有效的 session id");
+  assert.ok(result.content[0].text.includes(knownId), "should list a valid session id");
 });
 
-test("pi_abort 呼叫 handle.abort", async () => {
+test("pi_abort calls handle.abort", async () => {
   const task = tmpFile("TASK.md");
   writeFileSync(task, "Modify a.ts");
   let abortCalled = 0;
@@ -380,7 +380,7 @@ test("pi_abort 呼叫 handle.abort", async () => {
   assert.match(result.content[0].text, /Aborted /);
 });
 
-test("pi_abort 對未知 session_id 回錯誤", async () => {
+test("pi_abort returns an error for an unknown session_id", async () => {
   const task = tmpFile("TASK.md");
   writeFileSync(task, "Modify a.ts");
   const { handlers } = setup(fakeDispatch());
@@ -388,10 +388,10 @@ test("pi_abort 對未知 session_id 回錯誤", async () => {
   const result = await handlers.pi_abort({ session_id: "ghost" });
   assert.equal(result.isError, true);
   assert.match(result.content[0].text, /ghost/);
-  assert.ok(result.content[0].text.includes(knownId), "應列出有效的 session id");
+  assert.ok(result.content[0].text.includes(knownId), "should list a valid session id");
 });
 
-test("pi_transcript filter=text 只回傳 assistant 文字", async () => {
+test("pi_transcript filter=text returns only the assistant's text", async () => {
   const task = tmpFile("TASK.md");
   writeFileSync(task, "Modify a.ts");
   const { handlers } = setup(fakeDispatchWithEvents(buildTranscriptEvents()));
@@ -400,7 +400,7 @@ test("pi_transcript filter=text 只回傳 assistant 文字", async () => {
   assert.equal(result.content[0].text, "first\n---\nsecond");
 });
 
-test("pi_transcript filter=tools 只回傳工具呼叫", async () => {
+test("pi_transcript filter=tools returns only tool calls", async () => {
   const task = tmpFile("TASK.md");
   writeFileSync(task, "Modify a.ts");
   const { handlers } = setup(fakeDispatchWithEvents(buildTranscriptEvents()));
@@ -409,7 +409,7 @@ test("pi_transcript filter=tools 只回傳工具呼叫", async () => {
   assert.equal(result.content[0].text, 'write {"path":"a.ts"}');
 });
 
-test("pi_transcript filter=last_n 回傳最後 n 個事件", async () => {
+test("pi_transcript filter=last_n returns the last n events", async () => {
   const task = tmpFile("TASK.md");
   writeFileSync(task, "Modify a.ts");
   const events = buildTranscriptEvents();
@@ -422,7 +422,7 @@ test("pi_transcript filter=last_n 回傳最後 n 個事件", async () => {
   assert.deepEqual(JSON.parse(lines[1]), events[3]);
 });
 
-test("pi_transcript 在 handle 沒有 events 時退回空陣列", async () => {
+test("pi_transcript falls back to an empty array when handle has no events", async () => {
   const task = tmpFile("TASK.md");
   writeFileSync(task, "Modify a.ts");
   const { handlers } = setup(fakeDispatch());
@@ -431,7 +431,7 @@ test("pi_transcript 在 handle 沒有 events 時退回空陣列", async () => {
   assert.equal(result.content[0].text, "(no text output)");
 });
 
-test("pi_transcript 對未知 session_id 回錯誤", async () => {
+test("pi_transcript returns an error for an unknown session_id", async () => {
   const task = tmpFile("TASK.md");
   writeFileSync(task, "Modify a.ts");
   const { handlers } = setup(fakeDispatch());
@@ -439,10 +439,10 @@ test("pi_transcript 對未知 session_id 回錯誤", async () => {
   const result = await handlers.pi_transcript({ session_id: "ghost" });
   assert.equal(result.isError, true);
   assert.match(result.content[0].text, /ghost/);
-  assert.ok(result.content[0].text.includes(knownId), "應列出有效的 session id");
+  assert.ok(result.content[0].text.includes(knownId), "should list a valid session id");
 });
 
-test("pi_stats 回傳已完成派工的 token 與耗時", async () => {
+test("pi_stats returns the token usage and duration of a completed dispatch", async () => {
   const task = tmpFile("TASK.md");
   writeFileSync(task, "Modify a.ts");
   const { handlers } = setup(fakeDispatch());
@@ -453,7 +453,7 @@ test("pi_stats 回傳已完成派工的 token 與耗時", async () => {
   assert.equal(parsed.duration_s, 3);
 });
 
-test("pi_stats 對還在跑的派工回傳 running", async () => {
+test("pi_stats returns running for a dispatch still in progress", async () => {
   const task = tmpFile("TASK.md");
   writeFileSync(task, "Modify a.ts");
   const dispatchFn = async ({ sessionId }) => ({
@@ -466,7 +466,7 @@ test("pi_stats 對還在跑的派工回傳 running", async () => {
   assert.deepEqual(JSON.parse(stats.content[0].text), { running: true });
 });
 
-test("pi_stats 對未知 session_id 回錯誤", async () => {
+test("pi_stats returns an error for an unknown session_id", async () => {
   const task = tmpFile("TASK.md");
   writeFileSync(task, "Modify a.ts");
   const { handlers } = setup(fakeDispatch());
@@ -474,16 +474,16 @@ test("pi_stats 對未知 session_id 回錯誤", async () => {
   const result = await handlers.pi_stats({ session_id: "ghost" });
   assert.equal(result.isError, true);
   assert.match(result.content[0].text, /ghost/);
-  assert.ok(result.content[0].text.includes(knownId), "應列出有效的 session id");
+  assert.ok(result.content[0].text.includes(knownId), "should list a valid session id");
 });
 
-// --- [I1] git_diff_stat 的求值時機 ---
+// --- [I1] when git_diff_stat gets evaluated ---
 
-test("git_diff_stat 在派工結束時才求值，不是在派工之前", async () => {
+test("git_diff_stat is evaluated when the dispatch finishes, not before it starts", async () => {
   const task = tmpFile("TASK.md");
   writeFileSync(task, "Modify a.ts");
 
-  let tree = "(乾淨的工作樹)";
+  let tree = "(a clean working tree)";
   let calls = 0;
   let callsWhenDispatchStarted = null;
 
@@ -497,7 +497,7 @@ test("git_diff_stat 在派工結束時才求值，不是在派工之前", async 
     return {
       handle: { sessionId, steer() {}, async abort() {}, state: () => ({ running: false }) },
       done: (async () => {
-        // pi 在這段期間動了工作樹
+        // pi touches the working tree during this stretch
         tree = "1 file changed, 3 insertions(+)";
         return {
           ...okVerdict,
@@ -519,27 +519,27 @@ test("git_diff_stat 在派工結束時才求值，不是在派工之前", async 
 
   const result = await handlers.pi_dispatch({ task_file: task, cwd: "/tmp", mode: "sync" });
 
-  assert.equal(callsWhenDispatchStarted, 0, "派工開始前不該已經量過 git diff");
+  assert.equal(callsWhenDispatchStarted, 0, "git diff should not have been measured before the dispatch started");
   assert.match(result.content[0].text, /git_diff_stat:\s+1 file changed, 3 insertions\(\+\)/);
 });
 
-// --- [I7] 逐字稿與判決共用同一支 assistant 文字解析器 ---
+// --- [I7] the transcript and the verdict share the same assistant-text parser ---
 
-test("pi_transcript filter=text 也吃字串型 content（不再從逐字稿消失）", async () => {
+test("pi_transcript filter=text also accepts string-shaped content (no longer goes missing from the transcript)", async () => {
   const task = tmpFile("TASK.md");
   writeFileSync(task, "Modify a.ts");
   const events = [
-    { type: "message_end", message: { role: "assistant", content: "字串型回答" } },
-    { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "陣列型回答" }] } },
-    { type: "message_end", message: { role: "user", content: "使用者說的不算" } },
+    { type: "message_end", message: { role: "assistant", content: "a string-shaped reply" } },
+    { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "an array-shaped reply" }] } },
+    { type: "message_end", message: { role: "user", content: "what the user said does not count" } },
   ];
   const { handlers } = setup(fakeDispatchWithEvents(events));
   const sessionId = await dispatchAndGetSessionId(handlers, task);
   const result = await handlers.pi_transcript({ session_id: sessionId, filter: "text" });
-  assert.equal(result.content[0].text, "字串型回答\n---\n陣列型回答");
+  assert.equal(result.content[0].text, "a string-shaped reply\n---\nan array-shaped reply");
 });
 
-// --- [I7] 未知 session_id 的錯誤訊息只有一份 ---
+// --- [I7] there is exactly one error message for an unknown session_id ---
 
 test("pi_result and pi_status give the same single sentence for an unknown session_id", async () => {
   const task = tmpFile("TASK.md");
@@ -553,9 +553,9 @@ test("pi_result and pi_status give the same single sentence for an unknown sessi
   assert.match(fromResult.content[0].text, /Currently valid:/);
 });
 
-// --- registry.add 要在 spawn 之前，否則撞號會留下孤兒 pi 行程 ---
+// --- registry.add must happen before spawn, or a colliding id leaves an orphaned pi process ---
 
-test("session_id 撞號時不會先 spawn 子行程", async () => {
+test("a colliding session_id never spawns the child process first", async () => {
   const task = tmpFile("TASK.md");
   writeFileSync(task, "Modify a.ts");
   let spawned = 0;
@@ -563,7 +563,7 @@ test("session_id 撞號時不會先 spawn 子行程", async () => {
   const handlers = createToolHandlers({
     registry: {
       ...registry,
-      add() { throw new Error('session_id "x" 已存在'); },
+      add() { throw new Error('session_id "x" already exists'); },
     },
     dispatchFn: async (...a) => {
       spawned += 1;
@@ -577,9 +577,9 @@ test("session_id 撞號時不會先 spawn 子行程", async () => {
 
   await assert.rejects(
     () => handlers.pi_dispatch({ task_file: task, cwd: "/tmp", mode: "sync" }),
-    /已存在/,
+    /already exists/,
   );
-  assert.equal(spawned, 0, "registry.add 失敗時不該已經 spawn 出 pi 子行程");
+  assert.equal(spawned, 0, "a failed registry.add should never already have spawned a pi child process");
 });
 
 // --- The handle window between registry.add and the spawn ---
