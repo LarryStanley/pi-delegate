@@ -119,7 +119,7 @@ omlx 降級成「例如 omlx 或 LM Studio」這種舉例，不再是預設假�
 
 ## Job 3：移除個人識別資訊
 
-- `docs/superpowers/specs/…-design.md:245` 的 `/Users/stanley/Code/foo` → `/path/to/project-a`。
+- `docs/superpowers/specs/…-design.md:245` 那組寫死的家目錄絕對路徑 → `/path/to/project-a` / `/path/to/project-b`。
 - `.claude-plugin/plugin.json` 與 README 的描述不再寫死 `Qwen3.8 on omlx`。
 - fixture 裡的 `provider: "omlx"` 改成中性值。
 - `test@example.com`（`test/hooks-stdin.test.mjs`）是 RFC 2606 保留網域，依指示保留。
@@ -172,7 +172,8 @@ API 參數控制，此檢查不適用」。**這就是原本會誤報 `reasoning
 
 ### 個人識別資訊
 
-`git grep -n '/Users/stanley\|StanleydeMac'` → 無輸出。
+掃過所有被追蹤的檔案，找不到任何家目錄絕對路徑或機器名稱（這份報告本身也刻意不寫出那個字串，
+否則掃描會被自己的紀錄污染）。
 `.claude-plugin/plugin.json` 的 `author.name` 保留（那是作者署名，不是機器設定）。
 
 ---
