@@ -8,6 +8,10 @@ export const DEFAULT_MODEL = "Qwen3.8-27B-oQ4e-mtp";
 export const DEFAULT_TIMEOUT_S = 1500;
 const KILL_GRACE_MS = 2000;
 
+// 必須跟 verdict.mjs 的 TERMINAL_SUCCESS_EVENTS 同步（那邊已凍結，不能 import
+// 一個沒 export 的 const，所以在此複製一份）。見下方「為什麼判決要用事件驅動」。
+const TERMINAL_EVENT_TYPES = new Set(["agent_end", "agent_settled"]);
+
 // 旗標理由見 spec §6。不給 bash（給了會漫遊不動手）；--no-context-files 是
 // 必要不是最佳化（實測：沒加 = 43 read / 0 write / 逾時；加了 = 93 秒完成）。
 // 注意：pi 沒有 --cwd，工作目錄靠 spawn 的 options.cwd。
@@ -87,15 +91,52 @@ export async function dispatch({
     }, KILL_GRACE_MS);
   }
 
+  // pi --mode rpc 是「持久化雙向控制通道」：跑完一個 prompt、發完 agent_end
+  // 之後，它不會自己 exit — 還在等後續的 steer / abort 指令，這正是 steer
+  // 跟 abort 能運作的前提。這代表「process 自然關閉」永遠不能當作完成訊號：
+  // 靠 child.on("close") 判決會一路空等到 timeout 的 killWithEscalation()
+  // 把它殺掉才觸發 close，屆時 timedOut 已經是 true，resolveStatus 裡
+  // timedOut 又贏過其他狀態 —— 結果是每一次派工都回報 "timeout"，即使
+  // pi 早就完成任務、寫完檔案。真正可靠的完成訊號是事件流裡的終局事件
+  // （agent_end / agent_settled，跟 verdict.mjs 的 TERMINAL_SUCCESS_EVENTS
+  // 一致）。所以判決要在「事件流裡看到終局事件」的當下就定案，然後才去收
+  // 尾子行程 —— 不要「簡化」回等 close，那就是在重新引入這個 bug。
+  let settled = false;
+  function settleFromTerminalEvent() {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    settledResolve(
+      computeVerdict({
+        events,
+        aborted,
+        timedOut,
+        exitCode: null,
+        requestedFiles: extractRequestedFiles(taskFile),
+        gitDiffStat,
+        durationS: Math.round((Date.now() - startedAt) / 1000),
+        sessionId,
+      }),
+    );
+    // 判決已經定案，子行程沒有繼續活著的理由了 —— 用既有的
+    // killWithEscalation（不能繞過去：child.killed 不可靠，見上面關於
+    // "exit" 事件的說明），SIGTERM 先禮貌一次，逾期再 SIGKILL。
+    killWithEscalation();
+  }
+
   const push = createJsonlSplitter();
   child.stdout.setEncoding("utf8");
   child.stdout.on("data", (chunk) => {
     for (const line of push(chunk)) {
+      let event;
       try {
-        events.push(JSON.parse(line));
+        event = JSON.parse(line);
       } catch {
         // 非 JSON 行忽略（pi 偶爾會印非事件輸出）
+        continue;
       }
+      events.push(event);
+      if (TERMINAL_EVENT_TYPES.has(event?.type)) settleFromTerminalEvent();
     }
   });
 

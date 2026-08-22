@@ -29,7 +29,15 @@ if (has("--ignore-sigterm")) {
     });
   }
 
-  if (has("--echo-steer")) {
+  if (has("--stay-alive")) {
+    // 模擬真實 pi --mode rpc 的行為：吐完正常事件序列（含 agent_end）之後
+    // 不會 exit，而是繼續活著等下一個指令（steer/abort）。dispatch() 若還在
+    // 用 child.on("close") 當唯一判決入口，這裡就會一路卡到 timeout。
+    emit({ type: "message_update", usage: { input: 10, output: 5 } });
+    emit({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }] } });
+    emit({ type: "agent_end" });
+    setInterval(() => {}, 1000);
+  } else if (has("--echo-steer")) {
     let buffer = "";
     process.stdin.on("data", (chunk) => {
       buffer += chunk;

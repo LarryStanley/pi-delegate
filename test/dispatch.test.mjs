@@ -105,6 +105,23 @@ test("steer 會把訊息送進子行程的 stdin", async () => {
   assert.ok(verdict.last_message.includes("往左一點"));
 });
 
+test("agent_end 之後子行程仍存活（真實 pi RPC 行為）也要在遠短於 timeout 內回傳 completed", async () => {
+  const { dir, file } = tmpTask();
+  const timeoutS = 15;
+  const startedAt = Date.now();
+  const { done } = await dispatch({
+    taskFile: file, cwd: dir, model: "M", timeoutS,
+    sessionId: "s7", piCommand: [...FAKE_PI, "--stay-alive"], gitDiffStat: "",
+  });
+  const verdict = await done;
+  const elapsedS = (Date.now() - startedAt) / 1000;
+  assert.equal(verdict.status, "completed");
+  assert.ok(
+    elapsedS < timeoutS / 2,
+    `expected settle well under timeout (${timeoutS}s), took ${elapsedS}s`,
+  );
+});
+
 test("子行程忽略 SIGTERM 時，逾時仍靠 SIGKILL escalation 結束並回傳 timeout", async () => {
   const { dir, file } = tmpTask();
   const { done } = await dispatch({
