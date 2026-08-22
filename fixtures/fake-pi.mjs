@@ -52,7 +52,11 @@ if (has("--ignore-sigterm")) {
             type: "message_end",
             message: { role: "assistant", content: [{ type: "text", text: `收到：${command.message}` }] },
           });
-          emit({ type: "agent_settled" });
+          // 真實 pi 0.80.2 發的是 agent_end，不是 agent_settled（文件裡有
+          // agent_settled，但實跑 `pi --mode rpc` 從沒看過）。payload 就用
+          // 裸物件：computeVerdict 只看 e.type，不讀 agent_end 的欄位，帶著
+          // messages 只是徒增假象的真實感，卻沒有測試在驗證它。
+          emit({ type: "agent_end" });
           process.exit(0);
         }
       }
@@ -60,7 +64,7 @@ if (has("--ignore-sigterm")) {
   } else {
     emit({ type: "message_update", usage: { input: 10, output: 5 } });
     emit({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }] } });
-    emit({ type: "agent_settled" });
+    emit({ type: "agent_end" });
     process.exit(0);
   }
 }
