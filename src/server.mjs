@@ -1,10 +1,11 @@
-import { existsSync, appendFileSync, mkdirSync } from "node:fs";
+import { existsSync, appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { dispatch as realDispatch } from "./dispatch.mjs";
 import { createRegistry } from "./registry.mjs";
+import { serve } from "./stdio-server.mjs";
 import { formatVerdict, assistantText, writtenPaths } from "./verdict.mjs";
 import { loadConfig, loadPiDefaults, isDrafterModel } from "./config.mjs";
 
@@ -372,25 +373,18 @@ export function createToolHandlers({
 }
 
 export async function main() {
-  const { Server } = await import("@modelcontextprotocol/sdk/server/index.js");
-  const { StdioServerTransport } = await import("@modelcontextprotocol/sdk/server/stdio.js");
-  const { CallToolRequestSchema, ListToolsRequestSchema } = await import("@modelcontextprotocol/sdk/types.js");
-
   const handlers = createToolHandlers();
-  const server = new Server({ name: "pi-delegate", version: "0.1.0" }, { capabilities: { tools: {} } });
+  const version = JSON.parse(readFileSync(new URL("../.claude-plugin/plugin.json", import.meta.url), "utf8")).version;
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFINITIONS }));
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const handler = handlers[request.params.name];
-    if (!handler) return text(`Unknown tool: ${request.params.name}`, true);
-    try {
-      return await handler(request.params.arguments ?? {});
-    } catch (error) {
-      return text(`${request.params.name} failed: ${error.message ?? error}`, true);
-    }
+  await serve({
+    serverInfo: { name: "pi-delegate", version },
+    tools: TOOL_DEFINITIONS,
+    callTool: async (name, args) => {
+      const handler = handlers[name];
+      if (!handler) return text(`Unknown tool: ${name}`, true);
+      return handler(args);
+    },
   });
-
-  await server.connect(new StdioServerTransport());
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
