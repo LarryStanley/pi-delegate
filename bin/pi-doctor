@@ -1,28 +1,88 @@
 #!/usr/bin/env node
+// pi-delegate's environment advisor. It REQUIRES no particular provider or model — it
+// reports which model a dispatch will actually reach, and raises a problem only under
+// conditions that genuinely hold (see src/doctor.mjs for the reasoning).
 import { readFileSync, writeFileSync, copyFileSync, existsSync, mkdirSync } from "node:fs";
-import { homedir } from "node:os";
-import { join, dirname } from "node:path";
+import { dirname } from "node:path";
 import { checkModels, fixModels } from "../src/doctor.mjs";
+import { loadConfig, loadPiDefaults, configPath, piModelsPath, piSettingsPath } from "../src/config.mjs";
 
-const MODELS_PATH = join(homedir(), ".pi", "agent", "models.json");
+const MODELS_PATH = piModelsPath();
 const mode = process.argv.includes("--fix") ? "fix" : "check";
 
-function load() {
+// Degradation strategy matches src/modes.mjs and src/config.mjs: unreadable or
+// unparseable means "treat as empty configuration and carry on". The flag lives in a
+// module variable rather than inside the config object, because fixModels writes the whole
+// configuration back to models.json and any field we invent would become garbage in the
+// user's file.
+let unreadable = false;
+function loadModels() {
   if (!existsSync(MODELS_PATH)) return { providers: {} };
-  return JSON.parse(readFileSync(MODELS_PATH, "utf8"));
+  try {
+    const parsed = JSON.parse(readFileSync(MODELS_PATH, "utf8"));
+    return parsed && typeof parsed === "object" ? parsed : { providers: {} };
+  } catch {
+    unreadable = true;
+    return { providers: {} };
+  }
 }
 
-const cfg = load();
-const { ok, problems } = checkModels(cfg);
+const config = loadConfig();
+const piDefaults = loadPiDefaults();
+
+// The pair a dispatch will really use: pi-delegate's config.json when it sets one,
+// otherwise pi's own defaultProvider / defaultModel (what pi resolves when no flags are
+// passed).
+const selection = {
+  provider: config.provider ?? piDefaults.provider,
+  model: config.model ?? piDefaults.model,
+  source: config.provider || config.model ? "pi-delegate config.json" : "pi settings.json",
+};
+
+const modelsCfg = loadModels();
+const { ok, problems, checks } = checkModels(modelsCfg, selection, { drafterPatterns: config.drafter_patterns });
+
+const context = {
+  effective: {
+    provider: selection.provider,
+    model: selection.model,
+    source: selection.source,
+    thinking: config.thinking,
+    tools: config.tools,
+    no_context_files: config.no_context_files,
+    timeout_s: config.timeout_s,
+  },
+  models_path: MODELS_PATH,
+  models_unreadable: unreadable,
+  pi_settings_path: piSettingsPath(),
+  config_path: configPath(),
+  config_exists: existsSync(configPath()),
+  checks,
+};
 
 if (mode === "check") {
-  console.log(JSON.stringify({ ok, problems, models_path: MODELS_PATH }, null, 2));
+  console.log(JSON.stringify({ ok, problems, ...context }, null, 2));
   process.exit(ok ? 0 : 1);
 }
 
 if (ok) {
-  console.log(JSON.stringify({ ok: true, changed: false }, null, 2));
+  console.log(JSON.stringify({ ok: true, changed: false, ...context }, null, 2));
   process.exit(0);
+}
+
+// --fix only touches the class of problem it can be sure about (a local chat-template
+// server missing its thinking binding). Anything else is somebody's decision to make, and
+// we do not write guesses into their models.json.
+const fixable = problems.filter((p) => p.fixable);
+if (fixable.length === 0) {
+  console.log(JSON.stringify({
+    ok: false,
+    changed: false,
+    note: "Nothing here can be repaired automatically — each item below needs you to decide how to handle it.",
+    problems,
+    ...context,
+  }, null, 2));
+  process.exit(1);
 }
 
 if (existsSync(MODELS_PATH)) {
@@ -30,5 +90,16 @@ if (existsSync(MODELS_PATH)) {
 } else {
   mkdirSync(dirname(MODELS_PATH), { recursive: true });
 }
-writeFileSync(MODELS_PATH, `${JSON.stringify(fixModels(cfg), null, 2)}\n`);
-console.log(JSON.stringify({ ok: true, changed: true, fixed: problems.map((p) => p.code) }, null, 2));
+const fixed = fixModels(modelsCfg, selection);
+writeFileSync(MODELS_PATH, `${JSON.stringify(fixed, null, 2)}\n`);
+
+const after = checkModels(fixed, selection, { drafterPatterns: config.drafter_patterns });
+console.log(JSON.stringify({
+  ok: after.ok,
+  changed: true,
+  fixed: fixable.map((p) => p.code),
+  remaining: after.problems,
+  ...context,
+  checks: after.checks,
+}, null, 2));
+process.exit(after.ok ? 0 : 1);

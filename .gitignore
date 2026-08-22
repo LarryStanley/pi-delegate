@@ -1,3 +1,5 @@
 .worktrees/
 node_modules/
 .superpowers/
+docs/publish-prep-report.md
+docs/superpowers/plans/

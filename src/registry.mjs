@@ -5,7 +5,7 @@ export function createRegistry() {
     if (!sessions.has(sessionId)) {
       const known = [...sessions.keys()];
       throw new Error(
-        `未知的 session_id "${sessionId}"。目前有效的：${known.length ? known.join(", ") : "(無)"}`,
+        `Unknown session_id "${sessionId}". Currently valid: ${known.length ? known.join(", ") : "(none)"}`,
       );
     }
     return sessions.get(sessionId);
@@ -13,7 +13,7 @@ export function createRegistry() {
 
   return {
     add(sessionId, entry) {
-      if (sessions.has(sessionId)) throw new Error(`session_id "${sessionId}" 已存在`);
+      if (sessions.has(sessionId)) throw new Error(`session_id "${sessionId}" already exists`);
       sessions.set(sessionId, { ...entry });
     },
     get,

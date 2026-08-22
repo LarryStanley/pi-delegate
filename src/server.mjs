@@ -3,14 +3,16 @@ import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { randomUUID } from "node:crypto";
-import { dispatch as realDispatch, DEFAULT_MODEL, DEFAULT_TIMEOUT_S } from "./dispatch.mjs";
+import { dispatch as realDispatch } from "./dispatch.mjs";
 import { createRegistry } from "./registry.mjs";
 import { formatVerdict, assistantText, writtenPaths } from "./verdict.mjs";
-import { DRAFTER_MODELS } from "./doctor.mjs";
+import { loadConfig, loadPiDefaults, isDrafterModel } from "./config.mjs";
 
 export function eventsLogPath() {
   return join(homedir(), ".claude", "pi-delegate", "events.log");
 }
+
+const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"];
 
 const text = (body, isError = false) => ({ content: [{ type: "text", text: body }], isError: isError || undefined });
 
@@ -22,8 +24,9 @@ export function realGitDiffStat(cwd) {
   }
 }
 
-// spec §5 的 pi_status 要回 current_tool。pi 一次 tool call 會發
-// start → update* → end，所以「現在正在做什麼」＝ 有 start 但還沒 end 的那個。
+// spec §5 requires pi_status to return current_tool. A single pi tool call fires
+// start → update* → end, so "what's running right now" = whichever call has a start
+// but no end yet.
 function currentTool(events) {
   const open = new Map();
   for (const event of events) {
@@ -38,28 +41,68 @@ export const TOOL_DEFINITIONS = [
   {
     name: "pi_dispatch",
     description:
-      "把一份任務書派給本機 pi。mode=sync 阻塞到完成並回傳約 15 行判決；mode=async 立刻回 session_id，完成時會有通知。" +
-      "模型選擇：編輯既有檔案一律用 dense（預設 Qwen3.8-27B-oQ4e-mtp）；只有從零寫新檔案才值得換 MoE（Qwen3.6-35B-A3B-4bit）。",
+      "Dispatch a task book to the local pi agent. mode=sync blocks until completion and returns a ~15 line verdict; " +
+      "mode=async returns a session_id immediately and notifies you when it finishes. " +
+      "Leave provider / model unset to use the user's own pi configuration (the default model in " +
+      "~/.pi/agent/settings.json) — this plugin needs no separate setup. The defaults for the flags below " +
+      "were measured, not guessed; read the reason before overriding one.",
     inputSchema: {
       type: "object",
       properties: {
-        task_file: { type: "string", description: "任務書的絕對路徑" },
-        cwd: { type: "string", description: "pi 的工作目錄（通常是專案根目錄）" },
-        model: { type: "string", description: `模型 id，預設 ${DEFAULT_MODEL}` },
-        mode: { type: "string", enum: ["sync", "async"], description: "預設 sync" },
-        timeout_s: { type: "number", description: `逾時秒數，預設 ${DEFAULT_TIMEOUT_S}` },
+        task_file: { type: "string", description: "Absolute path to the task book" },
+        cwd: { type: "string", description: "Working directory for pi (usually the project root)" },
+        model: {
+          type: "string",
+          description:
+            "Model id. Omit it to use the user's default pi model. Supply provider and model either both or " +
+            "neither — pi only honours a paired override.",
+        },
+        provider: {
+          type: "string",
+          description:
+            "pi provider name (anything in ~/.pi/agent/models.json, or any pi built-in). Omit it to use the " +
+            "user's pi default.",
+        },
+        mode: { type: "string", enum: ["sync", "async"], description: "Defaults to sync" },
+        timeout_s: { type: "number", description: "Timeout in seconds; defaults to 1500 (or whatever pi-delegate config.json sets)" },
+        thinking: {
+          type: "string",
+          enum: THINKING_LEVELS,
+          description:
+            "Defaults to off: measured, small local models spend their whole budget thinking and never emit a " +
+            "single tool call. Strong hosted models do benefit from thinking on hard problems, so pass a level " +
+            "explicitly when you want it.",
+        },
+        tools: {
+          type: "string",
+          description:
+            "Comma-separated tool list; defaults to read,write,edit. Measured: granting bash made the agent roam " +
+            "with ls/cat instead of writing anything. Add bash only for a task that genuinely has to run " +
+            "commands — a deliberate decision, never a reflex.",
+        },
+        no_context_files: {
+          type: "boolean",
+          description:
+            "Defaults to true (do not load AGENTS.md / CLAUDE.md). Measured: without it, 43 reads / 0 writes / " +
+            "timed out; with it, finished in 93 seconds. Set false when a strong hosted model can digest the " +
+            "project context.",
+        },
+        append_system_prompt: {
+          type: "string",
+          description: "Text appended to pi's system prompt (pi's --append-system-prompt). Nothing is appended by default.",
+        },
       },
       required: ["task_file", "cwd"],
     },
   },
   {
     name: "pi_status",
-    description: "查一個派工現在的狀態：還在跑嗎、跑多久了、收到幾個事件。",
+    description: "Check where a dispatch stands right now: is it still running, for how long, how many events so far.",
     inputSchema: { type: "object", properties: { session_id: { type: "string" } }, required: ["session_id"] },
   },
   {
     name: "pi_steer",
-    description: "對執行中的派工插話糾正。會在當前 tool call 做完後插隊生效。",
+    description: "Interject to correct a running dispatch. It takes effect right after the current tool call finishes.",
     inputSchema: {
       type: "object",
       properties: { session_id: { type: "string" }, message: { type: "string" } },
@@ -68,31 +111,32 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: "pi_abort",
-    description: "立刻中止一個派工。注意「被中止」與「失敗」的處置相反：中止要原樣重派，失敗要改任務書。",
+    description: "Abort a dispatch immediately. Note that aborted and failed call for opposite responses: re-dispatch an aborted task unchanged, but rewrite the task book after a failure.",
     inputSchema: { type: "object", properties: { session_id: { type: "string" } }, required: ["session_id"] },
   },
   {
     name: "pi_result",
-    description: "取回一個已完成派工的判決（約 15 行）。async 派工用這個收工。",
+    description: "Retrieve the verdict (~15 lines) of a finished dispatch. This is how an async dispatch is collected.",
     inputSchema: { type: "object", properties: { session_id: { type: "string" } }, required: ["session_id"] },
   },
   {
     name: "pi_transcript",
     description:
-      "深入查看 pi 的對話內容。判決不夠用時才呼叫。filter=text 只看它說的話、tools 只看工具呼叫、last_n 看最後 n 個事件。",
+      "Drill into pi's conversation. Only reach for this when the verdict is not enough. filter=text shows what it " +
+      "said, tools shows only tool calls, last_n shows the last n events.",
     inputSchema: {
       type: "object",
       properties: {
         session_id: { type: "string" },
         filter: { type: "string", enum: ["text", "tools", "last_n"] },
-        n: { type: "number", description: "filter=last_n 時的數量，預設 20" },
+        n: { type: "number", description: "How many events when filter=last_n; defaults to 20" },
       },
       required: ["session_id"],
     },
   },
   {
     name: "pi_stats",
-    description: "查一個派工的 token 用量與耗時。除錯或估成本時才需要。",
+    description: "Token usage and elapsed time for a dispatch. Only needed when debugging or estimating cost.",
     inputSchema: { type: "object", properties: { session_id: { type: "string" } }, required: ["session_id"] },
   },
 ];
@@ -102,12 +146,28 @@ export function createToolHandlers({
   dispatchFn = realDispatch,
   eventsLogPath: logPath = eventsLogPath(),
   gitDiffStatFn = realGitDiffStat,
+  config = loadConfig(),
+  piDefaults = loadPiDefaults(),
 } = {}) {
   function appendEventsLog(verdict) {
     mkdirSync(dirname(logPath), { recursive: true });
     appendFileSync(
       logPath,
       `${JSON.stringify({ session_id: verdict.session_id, status: verdict.status, write_count: verdict.write_count })}\n`,
+    );
+  }
+
+  // registry.add reserves the slot before dispatchFn spawns anything (see the note in
+  // pi_dispatch), so there is a real window in which entry.handle is null. These three
+  // tools used to call `entry.handle.steer(...)` straight out and blew up inside that
+  // window with TypeError: Cannot read properties of null — an exception with no clue in
+  // it as far as the user is concerned.
+  function requireHandle(entry, sessionId) {
+    if (entry?.handle) return null;
+    return text(
+      `The pi child process for ${sessionId} is still starting up (no control handle yet). ` +
+      "Try again in a moment; if it stays this way, call pi_result to see whether the spawn itself failed.",
+      true,
     );
   }
 
@@ -129,32 +189,65 @@ export function createToolHandlers({
       duration_s: 0,
       tokens: { input: 0, output: 0 },
       session_id: sessionId,
-      last_message: `dispatch 失敗：${error?.message ?? error}`,
+      last_message: `dispatch failed: ${error?.message ?? error}`,
       last_message_truncated: false,
     };
   }
 
   return {
-    async pi_dispatch({ task_file, cwd, model = DEFAULT_MODEL, mode = "sync", timeout_s = DEFAULT_TIMEOUT_S }) {
-      if (!existsSync(task_file)) return text(`任務書不存在：${task_file}`, true);
-      if (DRAFTER_MODELS.includes(model)) {
-        return text(`${model} 是副駕駛模型，直接呼叫會回 500。改派給 target model。`, true);
+    async pi_dispatch({
+      task_file, cwd, model, provider, mode = "sync", timeout_s,
+      thinking, tools, no_context_files, append_system_prompt,
+    }) {
+      if (!existsSync(task_file)) return text(`Task book does not exist: ${task_file}`, true);
+      // Three-layer resolution: call arguments -> config.json -> pi's own defaults (no
+      // flag emitted). When neither layer supplies one, effectiveModel is null, meaning
+      // "let pi decide" — a normal state, not an error. The co-pilot guard only has
+      // meaning for a model whose id we actually know.
+      const effectiveModel = model ?? config.model ?? piDefaults.model;
+      const effectiveProvider = provider ?? config.provider ?? piDefaults.provider;
+      if (isDrafterModel(effectiveModel, config.drafter_patterns)) {
+        return text(
+          `${effectiveModel} matches a drafter pattern (${config.drafter_patterns.join(" / ")}). ` +
+          "Speculative-decoding co-pilot models return HTTP 500 when called directly — dispatch to the target " +
+          "model instead. If this is a false positive, adjust drafter_patterns in the pi-delegate config.json.",
+          true,
+        );
       }
 
       const sessionId = randomUUID().slice(0, 8);
-      // 先佔位再 spawn。反過來的話（舊版）`registry.add` 若拋錯（session_id 撞號）
-      // 會在子行程已經起來之後才炸，留下一個沒人管得到、pi_abort 也叫不到的孤兒
-      // pi 行程。佔位到 spawn 之間沒有 await，其他 tool 進不來。
-      registry.add(sessionId, { handle: null, done: null, verdict: null, cwd, taskFile: task_file, model });
+      // Reserve the slot, then spawn. The other way round (the old version) meant a
+      // throwing `registry.add` (a session_id collision) blew up after the child process
+      // was already running, leaving an orphaned pi process nobody could reach — not even
+      // pi_abort.
+      //
+      // The price is a window in which handle is null, and that window is REAL: the
+      // `await dispatchFn(...)` below hands control back to the event loop, other tool
+      // calls get in during that time, and what they see is the null stored here. (The old
+      // comment claimed "there is no await between reserving and spawning, so no other
+      // tool can get in" — that was wrong, and it is why pi_steer / pi_abort /
+      // pi_transcript threw TypeError inside the window.) Hence requireHandle() runs first
+      // in all three.
+      registry.add(sessionId, {
+        handle: null, done: null, verdict: null,
+        cwd, taskFile: task_file, model: effectiveModel, provider: effectiveProvider,
+      });
 
       let handle;
       let done;
       try {
         ({ handle, done } = await dispatchFn({
-          taskFile: task_file, cwd, model, timeoutS: timeout_s,
+          taskFile: task_file, cwd,
+          model, provider,
+          thinking, tools,
+          noContextFiles: no_context_files,
+          appendSystemPrompt: append_system_prompt,
+          timeoutS: timeout_s ?? config.timeout_s,
+          config, piDefaults,
           sessionId,
-          // thunk，不是先算好的字串：git diff 必須在 pi 跑完之後才量，否則乾淨
-          // 工作樹上永遠回報 (none)，spec §7/§11 的「逾時 ≠ 什麼都沒做」就廢了。
+          // A thunk, not a precomputed string: git diff has to be measured after pi
+          // finishes, or a clean working tree always reports (none), which defeats
+          // spec §7/§11's "timed out does not mean did nothing".
           gitDiffStat: () => gitDiffStatFn(cwd),
         }));
       } catch (error) {
@@ -176,12 +269,12 @@ export function createToolHandlers({
         });
 
       if (mode === "async") {
-        return text(`已派工（非同步）。session_id: ${sessionId}\n完成時會通知；也可用 pi_status 查進度。`);
+        return text(`Dispatched (async). session_id: ${sessionId}\nYou will be notified on completion; pi_status also reports progress.`);
       }
       return text(formatVerdict(await done));
     },
 
-    // 欄位對齊 spec §5：{status, elapsed_s, current_tool, files_touched}。
+    // Fields aligned with spec §5: {status, elapsed_s, current_tool, files_touched}.
     async pi_status({ session_id }) {
       return withSession(session_id, (entry) => {
         if (entry.verdict) {
@@ -205,22 +298,27 @@ export function createToolHandlers({
 
     async pi_steer({ session_id, message }) {
       return withSession(session_id, (entry) => {
-        entry.handle.steer(message);
-        return text(`已送出：${message}`);
+        const notReady = requireHandle(entry, session_id);
+        if (notReady) return notReady;
+        entry.handle?.steer(message);
+        return text(`Sent: ${message}`);
       });
     },
 
     async pi_abort({ session_id }) {
       return withSession(session_id, (entry) => {
-        entry.handle.abort();
-        return text(`已中止 ${session_id}。注意：中止要原樣重派，不要改任務書。`);
+        const notReady = requireHandle(entry, session_id);
+        if (notReady) return notReady;
+        entry.handle?.abort();
+        return text(`Aborted ${session_id}. Remember: re-dispatch an aborted task unchanged; do not rewrite the task book.`);
       });
     },
 
     async pi_result({ session_id }) {
-      // 未知 session 的錯誤訊息只有一份，就是 registry.get 拋的那句。舊版在這裡
-      // 自己重寫了一次（「有效的：」vs registry 的「目前有效的：」），兩份字串已經
-      // 漂移過一次；重複實作遲早會再漂。
+      // There is exactly one error message for an unknown session: the one registry.get
+      // throws. An earlier version rewrote it here too ("valid:" vs the registry's
+      // "currently valid:"), and the two strings had already drifted apart once —
+      // a duplicated implementation like that will drift again sooner or later.
       let entry;
       try {
         entry = registry.get(session_id);
@@ -237,23 +335,26 @@ export function createToolHandlers({
 
     async pi_transcript({ session_id, filter = "text", n = 20 }) {
       return withSession(session_id, (entry) => {
-        const events = entry.handle.events ?? [];
+        const notReady = requireHandle(entry, session_id);
+        if (notReady) return notReady;
+        const events = entry.handle?.events ?? [];
         if (filter === "tools") {
           const calls = events
             .filter((e) => e.type === "tool_execution_start")
             .map((e) => `${e.toolName} ${JSON.stringify(e.args)}`);
-          return text(calls.join("\n") || "(無工具呼叫)");
+          return text(calls.join("\n") || "(no tool calls)");
         }
         if (filter === "last_n") {
-          return text(events.slice(-n).map((e) => JSON.stringify(e)).join("\n") || "(無事件)");
+          return text(events.slice(-n).map((e) => JSON.stringify(e)).join("\n") || "(no events)");
         }
-        // 用 verdict.mjs 的同一支解析器：舊版這裡只認陣列型 content，於是
-        // 字串型 content 的訊息會出現在判決裡、卻從逐字稿消失。
+        // Uses the same parser as verdict.mjs: an earlier version here recognized only
+        // array-shaped content, so a string-shaped-content message would show up in the
+        // verdict but go missing from the transcript.
         const said = events
           .filter((e) => e.type === "message_end")
           .map((e) => assistantText(e.message))
           .filter((t) => t !== "");
-        return text(said.join("\n---\n") || "(無文字輸出)");
+        return text(said.join("\n---\n") || "(no text output)");
       });
     },
 
@@ -276,11 +377,11 @@ export async function main() {
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFINITIONS }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const handler = handlers[request.params.name];
-    if (!handler) return text(`未知的 tool：${request.params.name}`, true);
+    if (!handler) return text(`Unknown tool: ${request.params.name}`, true);
     try {
       return await handler(request.params.arguments ?? {});
     } catch (error) {
-      return text(`${request.params.name} 失敗：${error.message ?? error}`, true);
+      return text(`${request.params.name} failed: ${error.message ?? error}`, true);
     }
   });
 

@@ -1,11 +1,16 @@
 import { existsSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, relative, extname, basename } from "node:path";
+import { join, relative, resolve, dirname, extname, basename } from "node:path";
 
 const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".svelte", ".py"]);
 const EXEMPT_PREFIXES = ["tasks/", "scripts/", "docs/"];
 const EXEMPT_EXTENSIONS = new Set([".md", ".json", ".toml", ".yaml", ".yml"]);
 const SOURCE_DIR = "src";
+
+// Criteria for a project root. The presence of any of these files/directories is the
+// cheapest and most reliable signal that "this is the top of a project", and it works
+// without knowing what language the user is working in.
+const ROOT_MARKERS = [".git", "package.json", "pyproject.toml", "Cargo.toml", "go.mod", "deno.json"];
 
 export function probeFlagPath() {
   return join(homedir(), ".claude", "pi-delegate", "probe-active");
@@ -17,41 +22,73 @@ export function consumeProbe(file = probeFlagPath()) {
   return true;
 }
 
-// cwd 本身就落在某個 `src` 目錄裡的時候，relative() 會把 `src/` 那一段吃掉
-// （cwd=/proj/src、檔案=/proj/src/a.ts → rel="a.ts"），於是 `rel` 永遠不會以
-// `src/` 開頭，守門對整個 session 完全失效 —— 而且是全無徵兆的失效：不報錯、
-// 不輸出、hook 每次都乾淨地 exit 0。
+// What's protected is **the `src/` directly under the project root**, not any path
+// segment that happens to be named `src` anywhere in the absolute path.
 //
-// 兩個選項（loud warning vs 視為受保護）裡選了後者，理由：這道守門是「派工紀律」
-// 而不是安全邊界，它的兩種錯代價不對稱。多擋一次很吵，但使用者一個
-// `/pi-delegate:probe`（或切 mode）就解掉，而且錯誤是看得見的；漏擋則是整個
-// 外掛的前提無聲蒸發，還剛好發生在最容易發生的情境（在 src/ 底下開 Claude）。
-// 已知的誤判：專案根目錄本身在某個 `src` 段底下（例如 ~/src/myproj），那整個
-// 專案的原始碼都會被視為受保護。同樣用 probe / mode 解，代價可接受。
+// An earlier version matched `src` against every segment of cwd, to close a real hole:
+// when cwd itself sits inside `src/`, relative() swallows that `src/` segment
+// (cwd=/proj/src, file=/proj/src/a.ts → rel="a.ts"), so the guard goes silently inert for
+// the whole session. But that fix also swallowed `~/src/<project>` — a project that
+// happens to live under `~/src/` had its whole tree (including `lib/`, and .ts files at
+// its own root) treated as protected, just because some segment of the path was named
+// `src`.
+//
+// The correct approach is to find the project root first (walk up from cwd looking for
+// ROOT_MARKERS), then compute the relative path against **that root**. This fixes both
+// directions at once:
+//   cwd=/proj/src  → root=/proj → rel="src/a.ts"        → blocked (hole closed)
+//   cwd=~/src/proj → root=~/src/proj → rel="lib/a.ts"   → allowed (false positive fixed)
+//   cwd=~/src/proj → root=~/src/proj → rel="src/a.ts"   → blocked (correctly, as before)
+function findProjectRoot(cwd, markerExists) {
+  let dir = resolve(String(cwd));
+  for (;;) {
+    if (ROOT_MARKERS.some((marker) => markerExists(join(dir, marker)))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+// When no project marker can be found at all (not a git repo, no manifest of any kind),
+// fall back to the old conservative check. The reasoning is the same as before: this
+// guard is "dispatch discipline", not a security boundary, and the two kinds of error
+// have asymmetric cost — an extra block is annoying but one `/pi-delegate:probe` (or a
+// mode switch) clears it, visibly; a missed block means the whole plugin's premise
+// silently evaporates. The difference now is that this fallback only runs when the root
+// truly cannot be determined, instead of running for every project that happens to live
+// under `~/src/`.
 function cwdInsideSourceDir(cwd) {
   return String(cwd)
     .split(/[/\\]+/)
     .some((segment) => segment.toLowerCase() === SOURCE_DIR);
 }
 
-export function isProtectedPath(filePath, { cwd, exists = existsSync } = {}) {
-  const rel = relative(cwd, filePath);
+export function isProtectedPath(filePath, { cwd, exists = existsSync, markerExists = existsSync } = {}) {
+  const root = findProjectRoot(cwd, markerExists);
+  const base = root ?? cwd;
+  const rel = relative(base, filePath);
   if (rel.startsWith("..")) return false;
   if (basename(filePath).startsWith(".")) return false;
 
-  // macOS 的 APFS 預設 case-insensitive：`SRC/foo.ts` 跟 `src/foo.ts` 是同一個
-  // 檔案、`foo.TS` 跟 `foo.ts` 也是，但 `startsWith("src/")` 與副檔名 Set 都是
-  // 大小寫敏感的 —— 換個大小寫就整個繞過守門。比對一律先轉小寫。
-  // 在 case-sensitive 檔案系統上，這會讓真的另外存在的 `SRC/` 目錄也被當成受
-  // 保護；跟上面同樣的理由，這個方向的誤判是可接受的那一種。
+  // macOS's APFS is case-insensitive by default: `SRC/foo.ts` and `src/foo.ts` are the
+  // same file, and so are `foo.TS` and `foo.ts` — but `startsWith("src/")` and the
+  // extension Set are both case-sensitive, so a different case entirely bypasses the
+  // guard. Always lowercase before comparing.
+  // On a case-sensitive filesystem this also treats a genuinely separate `SRC/`
+  // directory as protected; for the same reasoning as above, that direction of false
+  // positive is the acceptable one.
   const relLower = rel.toLowerCase();
   const ext = extname(filePath).toLowerCase();
 
   if (EXEMPT_EXTENSIONS.has(ext)) return false;
   if (EXEMPT_PREFIXES.some((prefix) => relLower.startsWith(prefix))) return false;
-  if (!relLower.startsWith(`${SOURCE_DIR}/`) && !cwdInsideSourceDir(cwd)) return false;
+  const inSourceDir = relLower === SOURCE_DIR
+    || relLower.startsWith(`${SOURCE_DIR}/`)
+    || (root === null && cwdInsideSourceDir(cwd));
+  if (!inSourceDir) return false;
   if (!SOURCE_EXTENSIONS.has(ext)) return false;
 
-  // 全新檔案放行 —— 從零寫新檔案是 pi 最擅長的形狀，但也不值得為此擋下探針
+  // Brand-new files are allowed through — writing a file from scratch is the shape pi
+  // is best at, and it's not worth blocking a probe over
   return exists(filePath);
 }

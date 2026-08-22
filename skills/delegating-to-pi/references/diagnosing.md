@@ -1,23 +1,23 @@
-# 症狀對照表：失敗長得都一樣，原因不一樣
+# Symptom Lookup Table: Failures All Look the Same, Causes Don't
 
-失敗症狀（逾時、無產出）長得都一樣，很容易往錯的方向修。
-**先量 thinking／tool 比例再動手修**——症狀完全不指向原因，這上面連續試錯
-六個方向、兩小時全白工過。
+Failure symptoms (timeout, no output) all look identical, and it's easy to fix in the wrong direction.
+**Measure the thinking/tool ratio before touching anything** — the symptom points to nothing about the cause;
+this exact table cost six wrong directions and two hours of pure wasted effort before I wrote it down.
 
-| 症狀 | 直覺會去調 | 實際原因 |
+| Symptom | The intuitive fix | Actual cause |
 |---|---|---|
-| 逾時、零產出 | 併發、`--max-time`、`--thinking` | 規則檔注入（`--no-rules` / `--no-context-files`）或模型選錯 |
-| 下了 `--thinking off`，thinking 還是破千 | 提高 `max_tokens`、換模型 | **那個旗標是空操作。** 模型設定沒宣告 `reasoning`，或送的鍵端點不認得。harness 不會報錯 |
-| `read` 很多、`write` 是 0 | 任務太難 → 拆更細 | 沒禁止探索、沒點名檔案 |
-| 空手而回、秒數極短 | 提示不清楚，或淘汰該模型 | 多半是工具呼叫沒被 harness 接到。先直接打端點驗它會不會回 `tool_calls` |
-| 自報成功但東西是壞的 | 相信它 | 沒有外部驗證 |
-| **完全照任務書做，但產出是壞的** | 換模型、加強措辭 | **任務書要求了做不到的事。** 事件檔會是 thinking 0、`write` 正常，而且重跑每次都壞在同一處 |
-| 同一段註解出現在每一個修改點 | 以為它偷懶 | 它把任務書的示範文字當樣板照抄。要嘛寫明每處不同，要嘛審查時收尾 |
-| 目標檔一行未動，卻多出你沒要求的腳本檔 | 以為任務書不清楚 | **它把 `write` 當成被收掉的 bash 的替代品。** 明文禁止那幾個副檔名 |
-| 一整批逾時，而且伺服器變慢 | 提高 `timeout`、換模型 | **併發開太寬。** 去問端點的 tok/s，掉到平常三分之一就是它。重任務降到 2–3 |
-| 一批產出三道檢查全綠，但畫面不對 | 相信那三道檢查 | **它們都不問「有沒有東西跑到不該去的地方」。** 見 `references/verifying.md` 的階梯 |
-| 重構後守衛紅了，訊息像「這個東西不見了」 | 放寬那條守衛的正則 | **守衛掃的是舊寫法**，而它同時在誤報與漏抓兩個方向壞掉。改成驗「意圖現在住的地方」 |
-| 事件檔 0 bytes，而 harness 說「還在跑」 | 提高 timeout、再等一下 | **`timeout` 在 Windows 上殺不掉 pi**（node 不理 SIGTERM）。實測 45 分鐘 0 bytes。用 `scripts/pi-queue.sh`，並且**把事件檔大小當進度看** |
-| 剛派出的工作事件檔就是 0 bytes | 判定它停滯了、砍掉重派 | **`pi … > 檔案` 的 stdout 是塊緩衝的**（約 4KB），所以剛開始或輸出量小的工作會有一段時間停在 0。判準要**看行程還在不在**（`Get-CimInstance Win32_Process` 過濾 `pi-coding-agent`）＋**時間**：幾分鐘 0 bytes 但行程活著是正常的，二十分鐘還 0 才是停滯 |
-| 同樣的錯在兩支自己寫的工具上結果不同 | 修那支壞的 | **同一條判準被寫了兩次。** 抽成一個函式，不管它多短 |
-| 產出所有檢查全綠，部署卻被弱掃擋掉 | 以為是平台的問題 | **產出裡有跟功能無關的形狀地雷**（裸 `.sort()`、`innerHTML` ＋樣板插值）。驗收要多一道 grep，見 `references/verifying.md`「發布閘門」 |
+| Timeout, zero output | Concurrency, `--max-time`, `--thinking` | Rules-file injection (`--no-rules` / `--no-context-files`) or the wrong model |
+| `--thinking off` set, thinking still past a thousand | Raise `max_tokens`, switch models | **That flag is a no-op.** The model config never declared `reasoning`, or the key sent isn't one the endpoint honours. The harness doesn't error |
+| Lots of `read`, `write` at 0 | Task too hard → slice it finer | Exploration was never prohibited, files were never named |
+| Comes back empty-handed, very short time | Prompt unclear, or rule the model out | Usually the tool call never reached the harness. Hit the endpoint directly first to check whether it returns `tool_calls` at all |
+| Self-reports success but the thing is broken | Trust it | No external verification |
+| **Followed the task book exactly, but the output is broken** | Switch models, add stronger wording | **The task book asked for something impossible.** The event log shows thinking 0, `write` normal, and every rerun breaks in the exact same spot |
+| The same comment shows up at every edit point | Assume it's being lazy | It's treating the task book's example text as a template and copying it verbatim. Either state explicitly that each spot needs different text, or catch it in review |
+| Target file untouched by a single line, but an unrequested script file appeared | Assume the task book was unclear | **It's using `write` as a substitute for the bash it lost.** Explicitly forbid those file extensions |
+| A whole batch times out, and the server gets slower | Raise `timeout`, switch models | **Concurrency is too wide.** Check the endpoint's tok/s — dropping to a third of normal is the tell. Drop heavy tasks to width 2–3 |
+| A batch's output is all-green on the three checks, but the screen is wrong | Trust those three checks | **None of them ever asks "did anything land somewhere it shouldn't have."** See the ladder in `references/verifying.md` |
+| A guard goes red after a refactor, message like "this thing is gone" | Loosen that guard's regex | **The guard is scanning for the old pattern**, and it's broken in both the false-positive and the missed-detection direction at once. Rewrite it to check "where the intent now lives" |
+| Event file at 0 bytes, harness says "still running" | Raise the timeout, wait longer | **`timeout` can't kill pi on Windows** (node ignores SIGTERM). Measured: 0 bytes for 45 minutes. Use `scripts/pi-queue.sh`, and **read the event file's size as the progress indicator** |
+| A job just dispatched already shows a 0-byte event file | Assume it's stalled, kill and redispatch | **`pi … > file`'s stdout is block-buffered** (~4KB), so a job that just started or produces little output will sit at 0 for a while. Judge by **whether the process is still alive** (`Get-CimInstance Win32_Process` filtered to `pi-coding-agent`) **plus elapsed time**: a few minutes at 0 bytes with a live process is normal; twenty minutes still at 0 is actually stalled |
+| The same bug produces different results across two hand-written tools | Fix the broken one | **The same criterion was written twice.** Factor it into one function, no matter how short it is |
+| Output passes every check, but deployment gets blocked by the vulnerability scanner | Assume it's a platform issue | **The output contains a shape-based landmine unrelated to functionality** (bare `.sort()`, `innerHTML` + template interpolation). Add one more grep to acceptance — see "release gates" in `references/verifying.md` |

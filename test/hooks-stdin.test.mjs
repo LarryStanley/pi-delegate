@@ -1,11 +1,12 @@
-// 這個檔案測的是 hooks/*.mjs 腳本本身「餵 stdin JSON、讀 stdout」的行為，
-// 不是透過 import 呼叫函式 —— 因為 mode-guard.mjs / soft-nudge.mjs 是頂層 await 的
-// 可執行腳本，唯一忠實的測法是真的 spawn 一個 node 子程序模擬 hook 被呼叫的樣子。
+// This file tests the hooks/*.mjs scripts themselves — "feed stdin JSON, read stdout" —
+// rather than calling functions through import, because mode-guard.mjs / soft-nudge.mjs
+// are top-level-await executable scripts; the only faithful way to test them is to
+// actually spawn a node child process the way a hook invocation really would.
 //
-// 每個測試用獨立的 HOME（讓 os.homedir() 指向一個乾淨的 tmp 目錄）配合
-// setMode(project, mode, customStateFile) 寫入該 tmp HOME 下的 modes.json，
-// 這樣子程序裡 getMode(cwd) 讀到的狀態跟我們在測試裡設的完全對得上，
-// 而且不會動到跑測試這台機器上真正的 ~/.claude/pi-delegate/modes.json。
+// Each test uses its own HOME (pointing os.homedir() at a clean tmp directory) together
+// with setMode(project, mode, customStateFile) to write modes.json under that tmp HOME,
+// so the state getMode(cwd) reads inside the child process lines up exactly with what the
+// test set, and none of it touches this machine's real ~/.claude/pi-delegate/modes.json.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -21,9 +22,10 @@ const SOFT_NUDGE = join(REPO_ROOT, "hooks", "soft-nudge.mjs");
 const DOCTOR_CHECK = join(REPO_ROOT, "hooks", "doctor-check.mjs");
 
 function tmpProject() {
-  // macOS 的 tmpdir() 在 /var/folders/... 底下，而 /var 是 /private/var 的 symlink ——
-  // 子程序裡的 process.cwd() 會回傳 realpath（/private/var/...），跟我們拿到的原始路徑不一樣。
-  // 用 realpathSync 先解開 symlink，確保 setMode 寫入的 key 跟子程序讀到的 process.cwd() 一致。
+  // macOS's tmpdir() lives under /var/folders/..., and /var is a symlink to /private/var —
+  // process.cwd() inside the child process returns the realpath (/private/var/...), which
+  // differs from the raw path we were handed. Resolve the symlink with realpathSync first,
+  // so the key setMode writes matches the process.cwd() the child process reads back.
   return realpathSync(mkdtempSync(join(tmpdir(), "pi-delegate-proj-")));
 }
 
@@ -50,31 +52,31 @@ function gitInit(dir) {
   spawnSync("git", ["config", "user.name", "Test"], { cwd: dir });
 }
 
-// ---- [Important 2] mode-guard 對壞掉的 stdin 要 fail closed ----
+// ---- [Important 2] mode-guard must fail closed on broken stdin ----
 
-test("mode-guard: strict 模式下壞掉的 stdin JSON 會 deny，不是靜默放行", () => {
+test("mode-guard: broken stdin JSON in strict mode denies rather than silently allowing", () => {
   const project = tmpProject();
   const home = tmpHome();
   setMode(project, "strict", stateFileFor(home));
 
-  const result = runHook(MODE_GUARD, { cwd: project, home, stdin: "{ 這不是合法 JSON" });
+  const result = runHook(MODE_GUARD, { cwd: project, home, stdin: "{ this is not valid JSON" });
 
   assert.equal(result.status, 0);
   assert.match(result.stdout, /"permissionDecision":"deny"/);
 });
 
-test("mode-guard: soft 模式下壞掉的 stdin JSON 靜默退出（不 deny、無輸出）", () => {
+test("mode-guard: broken stdin JSON in soft mode exits silently (no deny, no output)", () => {
   const project = tmpProject();
   const home = tmpHome();
   setMode(project, "soft", stateFileFor(home));
 
-  const result = runHook(MODE_GUARD, { cwd: project, home, stdin: "{ 這不是合法 JSON" });
+  const result = runHook(MODE_GUARD, { cwd: project, home, stdin: "{ this is not valid JSON" });
 
   assert.equal(result.status, 0);
   assert.equal(result.stdout.trim(), "");
 });
 
-test("mode-guard: 合法 JSON、strict 模式、既有 src 檔仍正常 deny（迴歸）", () => {
+test("mode-guard: valid JSON, strict mode, an existing src file still denies normally (regression)", () => {
   const project = tmpProject();
   const home = tmpHome();
   setMode(project, "strict", stateFileFor(home));
@@ -90,16 +92,17 @@ test("mode-guard: 合法 JSON、strict 模式、既有 src 檔仍正常 deny（�
   assert.match(result.stdout, /existing\.ts/);
 });
 
-// ---- [Important 1] soft-nudge 不該對「剛新建的檔案」哭狼來了 ----
+// ---- [Important 1] soft-nudge must not cry wolf over a just-created file ----
 
-test("soft-nudge: 新建（git 未 track）的 src/*.ts 保持靜默", () => {
+test("soft-nudge: a new (not yet git-tracked) src/*.ts stays silent", () => {
   const project = tmpProject();
   const home = tmpHome();
   gitInit(project);
   mkdirSync(join(project, "src"), { recursive: true });
   const filePath = join(project, "src", "brand-new.ts");
   writeFileSync(filePath, "export const x = 1;\n");
-  // 故意不 git add —— 模擬 Write 工具剛新建、還沒進 git index 的檔案
+  // Deliberately not git add'd — simulates a file the Write tool just created that
+  // has not entered the git index yet
   setMode(project, "soft", stateFileFor(home));
 
   const payload = JSON.stringify({ cwd: project, tool_input: { file_path: filePath } });
@@ -109,7 +112,7 @@ test("soft-nudge: 新建（git 未 track）的 src/*.ts 保持靜默", () => {
   assert.equal(result.stdout.trim(), "");
 });
 
-test("soft-nudge: 既有（git 已 track）的 src/*.ts 會提醒", () => {
+test("soft-nudge: an existing (git-tracked) src/*.ts triggers a nudge", () => {
   const project = tmpProject();
   const home = tmpHome();
   gitInit(project);
@@ -123,20 +126,22 @@ test("soft-nudge: 既有（git 已 track）的 src/*.ts 會提醒", () => {
   const result = runHook(SOFT_NUDGE, { cwd: project, home, stdin: payload });
 
   assert.equal(result.status, 0);
-  // 只 match /"additionalContext"/ 是不夠的 —— 壞掉的頂層信封同樣會 match（這正是
-  // C1 能一路綠燈到最後一次 review 的原因）。這裡改成解析出結構、指名
-  // hookSpecificOutput.hookEventName，讓「退回頂層」這件事一定紅。
-  // 契約來源是 claude 2.1.239 binary 裡的 zod schema，不是公開文件（文件把
-  // additionalContext 畫在頂層，是錯的）；查證過程見 final-fix-report.md。
+  // Just matching /"additionalContext"/ is not enough — a broken top-level envelope would
+  // match it too (that is exactly why C1 stayed green all the way to the final review
+  // round). Parse the structure instead and name hookSpecificOutput.hookEventName
+  // explicitly, so that "it fell back to the top level" is guaranteed to go red.
+  // The contract's source is the zod schema inside the claude 2.1.239 binary, not the
+  // public docs (the docs draw additionalContext at the top level, which is wrong); see
+  // final-fix-report.md for how that was verified.
   const payloadOut = JSON.parse(result.stdout);
-  assert.equal(payloadOut.additionalContext, undefined, "additionalContext 不能放在頂層");
+  assert.equal(payloadOut.additionalContext, undefined, "additionalContext must not sit at the top level");
   assert.equal(payloadOut.hookSpecificOutput.hookEventName, "PostToolUse");
   assert.equal(typeof payloadOut.hookSpecificOutput.additionalContext, "string");
   assert.match(payloadOut.hookSpecificOutput.additionalContext, /existing\.ts/);
 });
 
-test("soft-nudge: 不是 git repo 時對既有檔案也放行（漏提醒比濫提醒安全）", () => {
-  const project = tmpProject(); // 沒有 git init
+test("soft-nudge: allows even an existing file when it is not a git repo (missing a nudge is safer than nagging)", () => {
+  const project = tmpProject(); // no git init
   const home = tmpHome();
   mkdirSync(join(project, "src"), { recursive: true });
   const filePath = join(project, "src", "existing.ts");
@@ -150,7 +155,7 @@ test("soft-nudge: 不是 git repo 時對既有檔案也放行（漏提醒比濫�
   assert.equal(result.stdout.trim(), "");
 });
 
-test("soft-nudge: 壞掉的 stdin JSON 靜默退出", () => {
+test("soft-nudge: broken stdin JSON exits silently", () => {
   const project = tmpProject();
   const home = tmpHome();
   setMode(project, "soft", stateFileFor(home));
@@ -161,7 +166,7 @@ test("soft-nudge: 壞掉的 stdin JSON 靜默退出", () => {
   assert.equal(result.stdout.trim(), "");
 });
 
-// ---- [C2] doctor-check 的 SessionStart 信封 ----
+// ---- [C2] doctor-check's SessionStart envelope ----
 
 function runDoctorCheck({ cwd, home }) {
   return spawnSync(process.execPath, [DOCTOR_CHECK], {
@@ -172,7 +177,7 @@ function runDoctorCheck({ cwd, home }) {
   });
 }
 
-test("doctor-check: 模式公告與問題清單包在 hookSpecificOutput/SessionStart 裡", () => {
+test("doctor-check: the mode announcement and dispatch target are wrapped in hookSpecificOutput/SessionStart", () => {
   const project = tmpProject();
   const home = tmpHome();
   setMode(project, "strict", stateFileFor(home));
@@ -181,25 +186,62 @@ test("doctor-check: 模式公告與問題清單包在 hookSpecificOutput/Session
 
   assert.equal(result.status, 0);
   const out = JSON.parse(result.stdout);
-  assert.equal(out.additionalContext, undefined, "additionalContext 不能放在頂層");
+  assert.equal(out.additionalContext, undefined, "additionalContext must not sit at the top level");
   assert.equal(out.hookSpecificOutput.hookEventName, "SessionStart");
-  assert.match(out.hookSpecificOutput.additionalContext, /pi-delegate 模式：strict/);
-  // 這個 tmp HOME 底下沒有 ~/.pi/agent/models.json，所以一定會有 provider-missing
-  assert.match(out.hookSpecificOutput.additionalContext, /provider-missing/);
+  assert.match(out.hookSpecificOutput.additionalContext, /pi-delegate mode: strict/);
+  assert.match(out.hookSpecificOutput.additionalContext, /Dispatch target/);
 });
 
-test("doctor-check: models.json 壞掉時降級成警告，不是讓 hook 掛掉", () => {
+// This tmp HOME has no configuration whatsoever — which is the NORMAL state (dispatches
+// use pi's own default model), not a pile of problems to fix. The old version emitted
+// provider-missing / model-missing here, i.e. a red line at every freshly installed user on
+// every SessionStart.
+test("doctor-check: reports no problems at all when nothing is configured", () => {
+  const project = tmpProject();
+  const home = tmpHome();
+  setMode(project, "soft", stateFileFor(home));
+
+  const result = runDoctorCheck({ cwd: project, home });
+
+  assert.equal(result.status, 0);
+  const context = JSON.parse(result.stdout).hookSpecificOutput.additionalContext;
+  assert.ok(!context.includes("WARNING"), `there should be no warning: ${context}`);
+  assert.ok(!context.includes("provider-missing"));
+});
+
+// The user's pi already has defaultProvider / defaultModel set (the state almost everyone
+// is in) — the doctor should report faithfully which model a dispatch will reach, not
+// demand they configure it a second time.
+test("doctor-check: reports pi own default model as the dispatch target", () => {
   const project = tmpProject();
   const home = tmpHome();
   setMode(project, "soft", stateFileFor(home));
   mkdirSync(join(home, ".pi", "agent"), { recursive: true });
-  writeFileSync(join(home, ".pi", "agent", "models.json"), "{ 這不是合法 JSON");
+  writeFileSync(
+    join(home, ".pi", "agent", "settings.json"),
+    JSON.stringify({ defaultProvider: "anthropic", defaultModel: "claude-sonnet-4-6" }),
+  );
 
   const result = runDoctorCheck({ cwd: project, home });
 
-  assert.equal(result.status, 0, `hook 不該非零退出：${result.stderr}`);
+  assert.equal(result.status, 0);
+  const context = JSON.parse(result.stdout).hookSpecificOutput.additionalContext;
+  assert.match(context, /anthropic \/ claude-sonnet-4-6/);
+  assert.ok(!context.includes("WARNING"), `a hosted provider should raise no warning at all: ${context}`);
+});
+
+test("doctor-check: a broken models.json degrades to a warning instead of killing the hook", () => {
+  const project = tmpProject();
+  const home = tmpHome();
+  setMode(project, "soft", stateFileFor(home));
+  mkdirSync(join(home, ".pi", "agent"), { recursive: true });
+  writeFileSync(join(home, ".pi", "agent", "models.json"), "{ this is not valid JSON");
+
+  const result = runDoctorCheck({ cwd: project, home });
+
+  assert.equal(result.status, 0, `the hook must not exit non-zero: ${result.stderr}`);
   const out = JSON.parse(result.stdout);
   assert.equal(out.hookSpecificOutput.hookEventName, "SessionStart");
-  assert.match(out.hookSpecificOutput.additionalContext, /不是合法 JSON/);
-  assert.match(out.hookSpecificOutput.additionalContext, /pi-delegate 模式：soft/);
+  assert.match(out.hookSpecificOutput.additionalContext, /is not valid JSON/);
+  assert.match(out.hookSpecificOutput.additionalContext, /pi-delegate mode: soft/);
 });
