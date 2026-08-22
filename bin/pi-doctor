@@ -1,0 +1,34 @@
+#!/usr/bin/env node
+import { readFileSync, writeFileSync, copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, dirname } from "node:path";
+import { checkModels, fixModels } from "../src/doctor.mjs";
+
+const MODELS_PATH = join(homedir(), ".pi", "agent", "models.json");
+const mode = process.argv.includes("--fix") ? "fix" : "check";
+
+function load() {
+  if (!existsSync(MODELS_PATH)) return { providers: {} };
+  return JSON.parse(readFileSync(MODELS_PATH, "utf8"));
+}
+
+const cfg = load();
+const { ok, problems } = checkModels(cfg);
+
+if (mode === "check") {
+  console.log(JSON.stringify({ ok, problems, models_path: MODELS_PATH }, null, 2));
+  process.exit(ok ? 0 : 1);
+}
+
+if (ok) {
+  console.log(JSON.stringify({ ok: true, changed: false }, null, 2));
+  process.exit(0);
+}
+
+if (existsSync(MODELS_PATH)) {
+  copyFileSync(MODELS_PATH, `${MODELS_PATH}.pi-delegate.bak`);
+} else {
+  mkdirSync(dirname(MODELS_PATH), { recursive: true });
+}
+writeFileSync(MODELS_PATH, `${JSON.stringify(fixModels(cfg), null, 2)}\n`);
+console.log(JSON.stringify({ ok: true, changed: true, fixed: problems.map((p) => p.code) }, null, 2));
