@@ -157,7 +157,8 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: "pi_result",
-    description: "Retrieve the verdict (~15 lines) of a finished dispatch. This is how an async dispatch is collected.",
+    description: "Retrieve the verdict (~15 lines) of a finished dispatch. This is how an async dispatch is collected. " +
+      "A sync dispatch's session_id stays collectable too, so re-read a verdict here rather than re-dispatching to see it again.",
     inputSchema: { type: "object", properties: { session_id: { type: "string" } }, required: ["session_id"] },
   },
   {

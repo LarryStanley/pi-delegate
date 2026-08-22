@@ -174,3 +174,28 @@ test("pi_status verbose is capped too — it is polled, and polling is the point
   const body = JSON.stringify(progressSummary(events, { verbose: true }), null, 2);
   assert.ok(body.length < 4_000, `pi_status verbose returned ${body.length} chars`);
 });
+
+// --- re-reading a verdict instead of re-dispatching ---
+//
+// From the cold-run experiment: a subagent driving these tools with nothing but their own
+// descriptions got everything right except one thing — it could not tell whether a sync
+// dispatch's session_id stays queryable afterwards. It did not need the answer for that
+// task, but the failure mode when you guess wrong is the expensive one: you re-run a whole
+// dispatch to see a verdict you already have.
+//
+// It does work. The sync path resolves the same `done` promise that stores the verdict in
+// the registry, so the entry is there and pi_result returns it. Nothing said so.
+test("a sync dispatch's session_id stays collectable, so nobody re-dispatches to re-read it", async () => {
+  const handlers = setup(bigWriteEvents());
+  const task = tmpFile("TASK.md");
+  const sync = await handlers.pi_dispatch({ task_file: task, cwd: tmpdir(), mode: "sync" });
+  const sessionId = sync.content[0].text.match(/session_id:\s*(\S+)/)[1];
+
+  const again = await handlers.pi_result({ session_id: sessionId });
+  assert.ok(!again.isError, "pi_result rejected a sync session_id");
+  assert.match(again.content[0].text, /status:\s+completed/);
+
+  // And the cheap poll works on it too — same reason.
+  const status = await handlers.pi_status({ session_id: sessionId });
+  assert.equal(JSON.parse(status.content[0].text).status, "completed");
+});
