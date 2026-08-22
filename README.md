@@ -13,11 +13,38 @@ verdict. **pi writes the source code.**
 
 ## Install
 
+```
+/plugin marketplace add LarryStanley/pi-delegate
+/plugin install pi-delegate@pi-delegate
+```
+
+Run both inside Claude Code. The first command registers this repository as a plugin
+marketplace; the second installs the plugin from it. If the install summary says
+`Run /reload-plugins to activate.`, run that too.
+
+Requires Node ≥ 22 and a `pi` installation that is already set up. Dependencies are
+installed automatically from the committed lockfile — there is nothing to `npm install`
+yourself.
+
+To update later:
+
+```
+/plugin marketplace update pi-delegate
+```
+
+<details>
+<summary>Local development install</summary>
+
+To run a working copy instead of the published version:
+
 ```bash
 claude --plugin-dir /path/to/pi-delegate
 ```
 
-Requires Node ≥ 22 and a `pi` installation that is already set up.
+A `--plugin-dir` copy takes precedence over the installed one for that session, so you can
+test changes without uninstalling.
+
+</details>
 
 Then run `/pi-delegate:setup` for a guided first-run walkthrough: it checks `pi` and its
 provider, explains the discipline modes and asks which one you want, offers to fix anything
