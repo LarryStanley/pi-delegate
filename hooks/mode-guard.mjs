@@ -2,12 +2,34 @@
 import { getMode } from "../src/modes.mjs";
 import { isProtectedPath, consumeProbe } from "../src/guard.mjs";
 
-const input = JSON.parse(await new Promise((resolve) => {
-  let body = "";
-  process.stdin.setEncoding("utf8");
-  process.stdin.on("data", (c) => { body += c; });
-  process.stdin.on("end", () => resolve(body || "{}"));
-}));
+async function readStdin() {
+  return new Promise((resolve) => {
+    let body = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (c) => { body += c; });
+    process.stdin.on("end", () => resolve(body || "{}"));
+  });
+}
+
+let input;
+try {
+  input = JSON.parse(await readStdin());
+} catch {
+  // stdin 壞掉時，唯一還能問的就是「目前 cwd 是不是 strict」—— 這裡故意 fail closed：
+  // 一個解析不了的 hook payload不該悄悄變成「沒意見，放行」，尤其是在 strict 模式。
+  if (getMode(process.cwd()) === "strict") {
+    console.log(JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason:
+          "mode-guard 無法解析 hook 輸入（stdin 不是合法 JSON）。strict 模式下失敗即擋，" +
+          "而非靜默放行。請重試這次寫入；若持續發生，回報 pi-delegate。",
+      },
+    }));
+  }
+  process.exit(0);
+}
 
 const cwd = input.cwd ?? process.cwd();
 if (getMode(cwd) !== "strict") process.exit(0);
