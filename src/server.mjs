@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { randomUUID } from "node:crypto";
+import { pathToFileURL } from "node:url";
 import { dispatch as realDispatch } from "./dispatch.mjs";
 import { createRegistry } from "./registry.mjs";
 import { serve } from "./stdio-server.mjs";
@@ -387,7 +388,17 @@ export async function main() {
   });
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// `file://` + argv[1] only happens to work on POSIX, where the path already starts with
+// `/` and needs no escaping. On Windows argv[1] is `C:\Users\...\server.mjs`, so the
+// template produces `file://C:\Users\...` while import.meta.url is
+// `file:///C:/Users/.../server.mjs` — two slashes against three, backslashes against
+// forward ones. The comparison is false, main() never runs, and the process exits 0
+// having spoken no protocol at all. The client reports that as `CONNECTION_CLOSED`,
+// which names the symptom and hides the cause completely.
+//
+// pathToFileURL does the platform-correct conversion (drive letter, separators, and
+// percent-escaping of characters that are legal in a path but not in a URL).
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {
     console.error(error);
     process.exit(1);
