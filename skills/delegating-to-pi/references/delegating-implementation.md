@@ -1,125 +1,136 @@
-# 派實作，不只是派測試
+# Dispatching Implementation, Not Just Tests
 
-派測試很容易接受，派實作會一直被自己駁回。這份文件只做一件事：把「實作為什麼也要派」
-講清楚，並給出讓它真的做得到的三個機制（契約、兩段派工、拆出接縫）。
+Dispatching tests is easy to accept. Dispatching implementation keeps getting overruled by yourself. This
+document does exactly one thing: makes the case for why implementation should also be dispatched, and gives the
+three mechanisms that actually make it possible (the contract, two-stage dispatch, cutting a seam).
 
-## 這條線為什麼要畫在「是不是原始碼」
+## Why the line has to be drawn at "is this source code"
 
-因為「這件需不需要判斷」這個判準會膨脹到吃掉所有東西。
+Because the criterion "does this need judgment" will keep expanding until it swallows everything.
 
-實測（2026-08-21，摘要面板的問答視圖）：skill 當時寫的是「只有三件事留給你：探針、
-診斷、最後那一眼」。同一輪主模型仍然自己寫了一個新元件（180 行）、一份既有元件的
-接線（125 行）、21 條渲染測試（190 行），只派出去兩個測試檔。**約八成的字元是主模型
-打的**，而每一件當下都有理由：
+Measured (2026-08-21, the summary panel's Q&A view): the skill at the time said "only three things are left for
+you: the probe, diagnosis, and the final look." In the same round, I still hand-wrote a new component (180
+lines), wiring for an existing component (125 lines), and 21 rendering tests (190 lines), and only dispatched two
+test files. **Roughly 80% of the characters were typed by me**, and each one had a reason at the time:
 
-| 當時的理由 | 為什麼不成立 |
+| The reason at the time | Why it doesn't hold up |
 |---|---|
-| 「接線的判斷太多」 | 判斷是「接到哪、契約長什麼樣」——那是**一段任務書**，不是 125 行程式碼 |
-| 「這個檔案一千行，pi 編輯不動」 | 對，所以要**拆**。拆完那個新檔案整份可以派 |
-| 「既有那 18 支測試會被改壞」 | 那是**禁令 ＋ 驗收腳本**的工作，不是「我自己來比較安全」 |
-| 「新元件從零寫比較快」 | 從零寫新檔案是 pi 最擅長的形狀，還可以換 MoE（快五倍） |
+| "The wiring needs too much judgment" | The judgment is "where does it connect, what does the contract look like" — that's **a paragraph in a task book**, not 125 lines of code |
+| "This file is a thousand lines, pi can't edit it" | Correct, so **cut a seam**. Once cut, the whole new file can be dispatched |
+| "The 18 existing tests will get broken" | That's the job of **a prohibition + an acceptance script**, not "I'll do it myself, it's safer" |
+| "Writing the new component from scratch is faster" | Writing a new file from zero is exactly the shape pi is best at, and it can even be traded to a MoE (5× faster) |
 
-所以判準只能是形式的、不能爭辯的：**會被 commit 的字元 → 派**。
+So the criterion has to be formal and non-negotiable: **a character that gets committed → dispatch it.**
 
-## 機制一：契約
+## Mechanism one: the contract
 
-任務書裡「這個檔案要長什麼樣」的部分。**寫得出契約，才代表你真的想清楚了**——這也是
-為什麼這件事留給你：契約是判斷，字元不是。
+The part of the task book describing "what this file should look like." **Being able to write the contract is
+proof you've actually thought it through** — which is also why this part stays with you: the contract is
+judgment, the characters are not.
 
-一份實作契約要有這七項，缺一項就會換回一個「看起來對、接不上」的產出：
+An implementation contract needs these seven items; missing even one gets back output that "looks right but doesn't connect":
 
-1. **檔案路徑**（要建立還是要編輯，行數上限）
-2. **匯出的簽名**（函式簽名、props 的型別、預設值）——照抄，不要描述
-3. **它會用到的既有東西**（import 哪些、那些東西的簽名）
-4. **DOM 契約**：`data-testid`、`aria-*`（哪個屬性只在什麼條件下出現）
-5. **不准做的事**：不要動哪些檔案、不要改哪些測試、不要建立 `.sh`／`.py`／`.md`
-6. **驗收指令**（它自己跑不了，但寫出來它才知道成功長什麼樣）
-7. **一個已驗證的範例**——探針那一處的真實程式碼。**這一項最貴也最有效**：
-   沒有它，任務書裡的位置描述在語法上不成立時，pi 會忠實地產出一個編譯不過的檔案。
+1. **File path** (create or edit, line-count ceiling)
+2. **Exported signature** (function signature, prop types, defaults) — copy it verbatim, don't describe it
+3. **Existing things it depends on** (which imports, their signatures)
+4. **DOM contract**: `data-testid`, `aria-*` (which attribute appears only under what condition)
+5. **What's off-limits**: which files not to touch, which tests not to change, don't create `.sh`/`.py`/`.md` files
+6. **Acceptance command** (it can't run it itself, but writing it down tells it what success looks like)
+7. **One validated example** — real code from the probe. **This item is the most expensive and the most
+   effective**: without it, when a location described in the task book is syntactically impossible, pi will
+   faithfully produce a file that doesn't compile.
 
-## 機制二：兩段派工（測試先行）
+## Mechanism two: two-stage dispatch (tests first)
 
-不要在同一份任務書裡同時要它寫測試與實作——它會寫出「剛好讓自己通過」的測試。
+Don't ask it to write tests and implementation in the same task book — it will write tests that just happen to pass whatever it wrote.
 
 ```
-第一段  派測試   契約 ＋「這些測試現在必須是紅的」
-        ↓        你在外面跑一次，確認真的紅，而且紅在預期的地方
-第二段  派實作   同一份契約 ＋ 那個測試檔的路徑 ＋「不准修改測試檔」
-        ↓        你在外面跑一次，確認綠
-第三段  你       變異檢查（故意改壞實作，測試必須紅）
+Stage 1  dispatch tests    contract + "these tests must be red right now"
+         ↓                 you run it externally, confirm it's genuinely red, and red where expected
+Stage 2  dispatch impl     same contract + that test file's path + "do not modify the test file"
+         ↓                 you run it externally, confirm green
+Stage 3  you               mutation check (deliberately break the implementation, tests must go red)
 ```
 
-第一段的紅燈是**免費的 RED**：它同時驗證了契約講得夠清楚（測試寫得出來）與測試真的
-咬到東西（沒有實作時會紅）。少了這一段，兩件事都要等到最後才發現。
+Stage 1's red is a **free RED**: it simultaneously validates that the contract was clear enough to write tests
+from, and that the tests actually catch something (they go red with no implementation present). Skip this stage
+and you don't find out about either problem until the very end.
 
-第二段的禁令是承重的：沒有它，pi 遇到過不了的測試會改測試，而那在 `git diff --stat`
-上看起來只是「多改了一個檔案」。
+Stage 2's prohibition is load-bearing: without it, when pi hits a test it can't satisfy, it edits the test — and
+in `git diff --stat` that just looks like "one more file changed."
 
-## 機制二之二：每一份產出都要過 reviewer
+## Mechanism two-b: every output goes through a reviewer
 
-派工的產出當草稿收，而「判決」這一步可以外包給一個**帶著任務書**的 review agent——
-它做的事是逐項比對，那正是本文開頭那張表裡「pi 最擅長的形狀」。
+Treat dispatched output as a draft, and the "verdict" step can itself be outsourced to a review agent
+**carrying the task book** — what it does is item-by-item matching, exactly the shape pi is best at, from the
+table at the top of this document.
 
-要給 reviewer 的三樣東西（少一樣它就只能憑感覺）：
+Three things the reviewer needs (missing any one, and it can only go by feel):
 
-1. **任務書本身**（契約）——沒有它，review 會退化成「我覺得這樣寫比較好」
-2. **diff 檔的路徑**（不要貼進 prompt，貼了它就永久佔著你的 context）
-3. **逐項的檢查清單**，每一項都是可以回 OK/BAD 的問句，而且要包含
-   **那個專案的閘門地雷**（裸 `.sort()`、`innerHTML` ＋插值…）
+1. **The task book itself** (the contract) — without it, review degenerates into "I think it'd be nicer this way"
+2. **The path to the diff file** (don't paste it into the prompt — pasted, it permanently occupies your context)
+3. **An item-by-item checklist**, each item a question answerable OK/BAD, and it must include
+   **this project's specific gate landmines** (bare `.sort()`, `innerHTML` + interpolation…)
 
-輸出**固定成** `ACCEPT` 或 `NEEDS_FIX ＋ 按嚴重度排序的清單`，並明文要求它
-「只講會造成實際問題的事，不要提風格偏好」——不然回來的東西你還得自己篩一遍。
+**Fix the output format to** `ACCEPT` or `NEEDS_FIX + a severity-ordered list`, and explicitly require it to
+"only report things that cause an actual problem, not style preferences" — otherwise you still have to filter
+what comes back yourself.
 
-### 順序：RED 驗完 → 送審 → 才做 GREEN
+### Order matters: verify RED → send for review → only then do GREEN
 
-實測 2026-08-21：我在 reviewer 審測試碼的**同時**把實作（文案）改下去了。於是我給它的
-前提（「這 10 條現在是 9 紅 1 綠」）在它讀檔時已經不成立，它看到的是 10 綠。那一次
-reviewer 正確地把矛盾回報出來，但那是運氣——它也可能因此判定「測試根本沒咬到東西」。
+Measured 2026-08-21: I edited the implementation (copy) **at the same time** the reviewer was reviewing the test
+code. So the premise I'd given it ("these 10 tests are currently 9 red, 1 green") had already stopped being true
+by the time it read the files — it saw 10 green. That time the reviewer correctly reported the contradiction, but
+that was luck — it could just as easily have concluded "these tests don't catch anything at all."
 
-**review 是對一個靜止的狀態做的。** 在它跑的時候只能做**不影響它讀的檔案**的事。
+**Review happens against a frozen state.** While it's running, only do things that **don't touch the files it's reading.**
 
-## 在 worktree 裡跑派工：node_modules 可以借，但有界線
+## Running dispatches in a worktree: node_modules can be borrowed, but there's a boundary
 
-worktree 省的是分支切換的風險，付的是 `npm install`（這個 repo 幾分鐘 ＋ 一份磁碟）。
-Windows 上可以用 junction 借主目錄的一份：
+A worktree saves you branch-switching risk, at the cost of `npm install` (a few minutes plus a copy of disk, on
+this repo). On Windows you can borrow the main directory's copy with a junction:
 
 ```bash
 cmd //c "mklink /J .worktrees\<name>\node_modules node_modules"
 ```
 
-**界線（實測 2026-08-21）**：純 node 環境的測試完全正常；但 vitest 的 setup 檔如果
-被解析成 `/@fs/<主目錄的絕對路徑>`（例如 `@testing-library/jest-dom`），Vite 會因為
-那個路徑在 worktree root 之外而拒絕，症狀是**整個測試檔 0 個測試 ＋
-`Cannot find module '/@fs/…'`**。
+**Boundary (measured 2026-08-21)**: plain-node-environment tests work completely normally; but if vitest's setup
+file resolves to `/@fs/<absolute path in the main directory>` (e.g. `@testing-library/jest-dom`), Vite refuses it
+because that path falls outside the worktree root — the symptom is **the whole test file shows 0 tests plus
+`Cannot find module '/@fs/…'`**.
 
-所以：**借 node_modules 的 worktree 只跑得動不依賴 Vite 檔案系統允許清單的測試**。
-需要跑渲染測試就在主目錄合併後跑（那一輪本來就要跑全量），或者老實 `npm install`。
+So: **a worktree borrowing node_modules can only run tests that don't depend on Vite's filesystem allowlist.**
+If you need to run rendering tests, do it after merging into the main directory (that round needs a full run
+anyway), or just do a real `npm install`.
 
-## 機制三：拆出接縫
+## Mechanism three: cut a seam
 
-pi 編輯得動的檔案上限實測約 700 行（超過就把預算花在讀檔上）。既有的大檔案怎麼辦：
+pi's measured ceiling for editable file size is around 700 lines (past that, the budget gets spent on reading).
+For an existing large file:
 
-**由你決定接縫，由 pi 填內容。** 具體地說：把要新增的行為抽成一個**新檔案**（新檔案
-沒有行數問題、也沒有「不小心改壞旁邊」的風險），然後大檔案裡只留一個**掛載點**。
+**You decide the seam, pi fills in the content.** Concretely: extract the behaviour being added into a **new
+file** (a new file has no line-count problem, and no risk of accidentally breaking something nearby), then leave
+only a **mount point** in the large file.
 
-那個掛載點的編輯是唯一允許你親手改原始碼的地方，而且**有硬上限：一個檔案裡
-10 行以內、而且是在你自己命名的接縫上**。超過就代表接縫沒切乾淨——回去改切法，
-不要順手多寫二十行。
+Editing that mount point is the only place you're allowed to touch source code by hand, and it has a **hard
+ceiling: no more than 10 lines in any one file, and only at a seam you named yourself.** Going over means the
+seam wasn't cut cleanly — go back and change how it's cut, don't just write 20 extra lines while you're at it.
 
-沒有這個上限，「整合」會變成新的萬用理由。實測那一輪的接線是 125 行，而它之所以
-是 125 行，是因為那不只是掛載，還包括視圖切換的狀態、標題列的條件、無障礙屬性——
-全部都應該在契約裡，由 pi 寫。
+Without that ceiling, "integration" becomes a new catch-all excuse. The wiring in that round was measured at 125
+lines, and the reason it was 125 lines is that it wasn't just a mount point — it also covered view-switching
+state, header conditionals, accessibility attributes — all of which should have been in the contract, for pi to write.
 
-## 你不該碰原始碼的證據
+## Signs you shouldn't be touching source code
 
-三個紅旗，看到就停下來把手上的東西變成任務書：
+Three red flags — stop the moment you see one and turn what's in your hands into a task book instead:
 
-- 你正在編輯一個 `.ts` / `.svelte` / `.py` 的產品或測試檔
-- 你正在寫第二個大括號
-- 你剛剛想「這個我寫比較快」
+- You're editing a `.ts` / `.svelte` / `.py` product or test file
+- You're typing your second curly brace
+- You just thought "it's faster if I write this myself"
 
-## 整合之後誰負責
+## After integration, who's responsible for what
 
-**判決是你的，修補是 pi 的。** 產出有三條紅的，不要自己改那三條——把失敗訊息餵回去
-派一輪修補（見本目錄 `verifying.md` 的「失敗不要整份丟掉」）。你只在**第三輪還是紅的
-同一個地方**時才親手看那一段，而那時你要修的通常是任務書，不是程式碼。
+**The verdict is yours, the patching is pi's.** If output comes back with three red, don't fix those three
+yourself — feed the failure messages back and dispatch a patch round (see "don't throw away a whole failed run"
+in this directory's `verifying.md`). Only look at that piece by hand once **the same spot is still red on the
+third round** — and at that point what you usually need to fix is the task book, not the code.
