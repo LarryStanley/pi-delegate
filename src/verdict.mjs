@@ -293,7 +293,12 @@ export function progressSummary(events, { verbose = false } = {}) {
       "nothing left to do rather than a hard problem. pi_steer can redirect it; a larger task avoids it.";
   }
   if (verbose) {
-    summary.files_touched = formatWriteCounts(counts);
+    // Capped for the same reason, and it matters more here: pi_status is built to be
+    // polled, so an uncapped verbose reply is paid once per poll.
+    summary.files_touched = formatWriteCounts(counts).slice(0, FILE_LIST_CAP);
+    if (counts.length > FILE_LIST_CAP) {
+      summary.files_touched_note = `showing ${FILE_LIST_CAP} of ${counts.length} files`;
+    }
     summary.last_message = lastAssistantText(events).slice(0, 300);
   }
   return summary;
@@ -357,8 +362,27 @@ function stderrTail(stderr) {
     .map((line) => `  ${line}`);
 }
 
+// The verdict is a judgment, not an inventory. A 300-file dispatch used to render a
+// 25,866-character reply — and pi_result, unlike pi_transcript, is called for EVERY async
+// dispatch, so that landed in Claude Code's context every single time.
+//
+// There was a guard for this already ("formatVerdict output is at most 20 lines") and it
+// passed the whole time, because 300 paths joined with ", " is one line. Lines were never
+// the budget; characters are.
+//
+// The cap must never cost the COUNT, though: "20 files written" when it wrote 300 is a
+// wrong verdict, not a short one. So the total is always stated, and the paths are what
+// gets trimmed — they are recoverable from git_diff_stat and from the working tree.
+export const FILE_LIST_CAP = 20;
+
+export function capFileList(paths, cap = FILE_LIST_CAP) {
+  if (paths.length <= cap) return paths.join(", ");
+  const rest = paths.length - cap;
+  return `${paths.slice(0, cap).join(", ")}, … and ${rest} more (${paths.length} total)`;
+}
+
 export function formatVerdict(v) {
-  const list = (arr) => (arr.length ? arr.join(", ") : "(none)");
+  const list = (arr) => (arr.length ? capFileList(arr) : "(none)");
   const lines = [
     `status:                 ${v.status}`,
     `write_count:            ${v.write_count}`,
