@@ -33,14 +33,14 @@ test("does not split on the U+2028 line separator", () => {
   // JSON.stringify emits U+2028 verbatim (verified: it does not escape it), so a real pi
   // event really can contain one.
   const line = JSON.stringify({ text: "a b" });
-  assert.ok(line.includes(" "), "前提：這一行真的含 U+2028");
+  assert.ok(line.includes(" "), "precondition: this line genuinely contains U+2028");
   assert.deepEqual(push(`${line}\n`), [line]);
 });
 
 test("does not split on the U+2029 paragraph separator", () => {
   const push = createJsonlSplitter();
   const line = JSON.stringify({ text: "a b" });
-  assert.ok(line.includes(" "), "前提：這一行真的含 U+2029");
+  assert.ok(line.includes(" "), "precondition: this line genuinely contains U+2029");
   assert.deepEqual(push(`${line}\n`), [line]);
 });
 
