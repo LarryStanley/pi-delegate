@@ -1,162 +1,172 @@
-# 派工的機械面：旗標、寬度、逾時
+# The Mechanics of Dispatch: Flags, Width, Timeouts
 
-> **這份文件裡的 `dispatch-pi.sh` / `run-queue.ps1` 這個外掛沒有附。**
-> 它們是這些實測數字當初的產生環境（舊的手寫腳本），文字與數字原樣保留當作依據。
-> 在 pi-delegate 裡對應的做法是 MCP tool：單件派工用 `pi_dispatch`，
-> 要扇出多件就用 `pi_dispatch mode=async` 連開幾件、再各自用 `pi_result` 收回判決
-> ——「同時開幾件」的寬度判斷、逾時與驗證紀律照這份文件走，只是換了派工的手把。
+> **The `dispatch-pi.sh` / `run-queue.ps1` plugin referenced in this document is not shipped here.**
+> They were the environment that produced these measured numbers (old hand-written scripts) — the text and the numbers are kept as-is because they're the evidence.
+> The equivalent in pi-delegate is the MCP tools: `pi_dispatch` for a single dispatch,
+> and `pi_dispatch mode=async` fired several times in a row for fan-out, each collected back with `pi_result`
+> — the judgment calls about concurrency width, timeouts, and verification discipline still apply exactly as written here; only the dispatch mechanism changed.
 
-## 六步裡哪幾步不可省
+## Which of the six steps can't be skipped
 
-**第 1 步做不好，第 3 步一定壞。** 沒有探針的任務書是猜測，而 pi 會忠實地把
-猜測做出來——實測同一輪的對照組：做過探針的那件一次過，沒做探針的那件交回一個
-編譯不過的檔案，因為任務書指定的修改位置在語法上不成立。
+**If step 1 is skipped, step 3 breaks, guaranteed.** A task book without a probe is a guess, and pi will
+faithfully build the guess — measured control comparison in the same round: the probed one worked on the first
+try, the un-probed one came back with a file that didn't even compile, because the edit location the task book
+specified was syntactically impossible.
 
-**第 4 步是不可省的。** 任務書要它回報「幾條通過」，它會給你數字——那個數字
-不保證是跑出來的。
+**Step 4 cannot be skipped.** The task book asks it to report "how many passed" — that number is not guaranteed
+to be the number that actually ran.
 
-**第 5 步的產出零 BAD 不代表審查有效。** 種一個真的違規進去看它會不會紅，
-而且兩個方向都要看：乾淨的時候會不會亂報也要驗。
+**Step 5's output showing zero BAD does not mean the review is working.** Plant a real violation and watch
+whether it goes red — and check both directions: also verify it doesn't false-alarm when the input is clean.
 
 
-**什麼時候讀這一份**：要 fan-out 一整批、要決定併發寬度、要判讀逾時與被中止。
+**When to read this**: fanning out a whole batch, deciding concurrency width, reading a timeout or an abort.
 
-核心：派工的實際成本是「寫任務書 ＋ 驗收」，不是牆上時鐘——**丟背景，等待期間
-做下一件事**。想再更快就減少每份任務的 token，不是加寬併發。
+Core idea: the real cost of dispatch is "writing the task book + acceptance review," not wall-clock time —
+**throw it in the background, work on the next thing while it runs.** To go faster, cut tokens per task, not
+widen concurrency.
 
-← 回 `SKILL.md`（四路分流與紀律表）
+← back to `SKILL.md` (the four-way split and the discipline table)
 
-## 現成的腳本
+## Ready-made scripts
 
-這個 skill 目錄底下的 `scripts/` 有四支可以直接拿去用的：
+This skill directory's `scripts/` has four you can use directly:
 
-| 腳本 | 做什麼 |
+| Script | What it does |
 |---|---|
-| `dispatch-pi.sh` | 把一份任務書派給 pi。價值全在那幾個旗標上（見下一節） |
-| `pi-queue.sh` | 固定寬度的 fan-out，收工時列出撞逾時的那幾份 |
-| `pi-verify-fix.sh` | 跑測試 → 紅的話自動派一輪修補給 pi → 最多兩輪 |
-| `run-queue.ps1` | 舊的 PowerShell 版佇列 |
+| `dispatch-pi.sh` | Dispatch one task book to pi. Its value is entirely in the flags (see next section) |
+| `pi-queue.sh` | Fixed-width fan-out; lists whichever tasks hit timeout when it finishes |
+| `pi-verify-fix.sh` | Run tests → if red, automatically dispatch a patch round to pi → two rounds max |
+| `run-queue.ps1` | The older PowerShell queue |
 
-**每一支的檔頭都寫著它的旗標與數字是怎麼量出來的**，重寫一次要再踩一輪坑。
-`scripts/README.md` 有串起來用的樣子，以及三件這些腳本**不會**幫你做的事。
+**Each one's header explains its flags and where the numbers came from** — rewriting it means re-hitting the same potholes.
+`scripts/README.md` shows how to chain them together, and the three things these scripts **won't** do for you.
 
 
-## 必要旗標
+## Required flags
 
 ### pi
 
 ```bash
-pi -p "讀取目前工作目錄下的 TASK.md 並照著做。" \
+pi -p "Read TASK.md in the current working directory and follow it." \
   --provider <provider> --model <model> --thinking off \
   --tools read,write \
   --no-session --no-context-files --no-skills --no-extensions \
   --mode json > events.json 2>&1
 ```
 
-`--no-context-files` 是 pi 這邊對應 omp `--no-rules` 的旗標（擋掉 `AGENTS.md` /
-`CLAUDE.md` 注入），跟下面 omp 那條一樣是**必要**不是最佳化。
+`--no-context-files` is pi's equivalent of omp's `--no-rules` flag (blocks `AGENTS.md` / `CLAUDE.md` injection) —
+same as the omp flag below, it's **required**, not an optimization.
 
-pi 沒有 `--max-time`，逾時要由派工腳本自己包。
+pi has no `--max-time`; the dispatch script has to wrap its own timeout.
 
-⚠ **在 Windows 上 `timeout 900 pi …` 包不住它。** 實測：到了 15 分鐘沒有殺掉行程，
-事件檔 45 分鐘都是 0 bytes，而 harness 那邊看起來只是「還在跑」。原因是 git-bash 的
-`timeout` 送 SIGTERM，而 Windows 上的 node 不理它。**用 `pi-queue.sh`**——它用
-`Wait-Process -Timeout` 加強制結束，同一批 12 份都是它跑完的。
+⚠ **On Windows, `timeout 900 pi …` does not actually bound it.** Measured: at 15 minutes the process wasn't
+killed, the event file sat at 0 bytes for 45 minutes, and from the harness side it just looked "still running."
+The cause: git-bash's `timeout` sends SIGTERM, and node on Windows ignores it. **Use `pi-queue.sh`** — it uses
+`Wait-Process -Timeout` plus a forced kill; the same batch of 12 all finished on it.
 
-判讀方法：**事件檔的大小就是進度**。0 bytes 又過了比正常耗時久，就是卡死不是慢，
-直接停掉重派，不要繼續等。
+How to read it: **the event file's size is the progress indicator.** 0 bytes and past the normal duration means
+stuck, not slow — kill it and redispatch immediately, don't keep waiting.
 
 ### omp
 
 ```bash
-omp -p "<指令>" --model <provider>/<model> --cwd <worktree> \
+omp -p "<instruction>" --model <provider>/<model> --cwd <worktree> \
   --auto-approve --max-time 1200 \
   --no-lsp --no-skills --no-extensions --no-rules --no-session \
   --mode json > events.json 2>&1
 ```
 
-`--no-rules` 是**必要**不是最佳化：專案的 `CLAUDE.md` 會被注入系統提示，長而密的規則
-檔會讓小模型忙著自我審查而不動手。實測同一任務：沒加 = 43 次 read / **0 次 write** /
-逾時；加了 = **93 秒完成**。必要的專案規則改寫進任務書。
+`--no-rules` is **required**, not an optimization: the project's `CLAUDE.md` gets injected into the system
+prompt, and a long, dense rules file keeps a small model busy self-reviewing instead of getting to work. Measured
+on the same task: without it = 43 reads / **0 writes** / timeout; with it = **done in 93 seconds.** Any required
+project rules get rewritten into the task book instead.
 
-`--auto-approve` 不加會卡在核准提示，而 `-p` 模式沒人能按。
+Without `--auto-approve` it stalls on the approval prompt, and in `-p` mode there's no one there to click it.
 
 
-## 把外包比例拉高
+## Pushing the outsourced fraction higher
 
-想讓小模型接掉大部分的活，瓶頸不是模型能力，是**派工與驗收的手續費**。三件事把手續費壓到接近零：
+To get a small model to take on most of the work, the bottleneck isn't model capability — it's the **overhead of
+dispatching and accepting.** Three things drive that overhead close to zero:
 
-**一、派工一律丟背景，強模型不要等。**
-pi 沒有 `--max-time`，用 shell 的 `timeout` 包起來、丟到背景，強模型在等待期間去做下一件事
-（寫下一份任務書、驗上一份產出）。實測三次派工各 35–55 秒，但那段時間強模型完全沒有閒著——
-**外包的實際成本是「寫任務書 + 驗收」，不是牆上時鐘**。
+**One: always throw dispatches into the background; the strong model doesn't wait.**
+pi has no `--max-time`, so wrap it in shell's `timeout` and background it — the strong model moves on to the next
+thing while it runs (writing the next task book, verifying the previous output). Measured: three dispatches took
+35–55 seconds each, but the strong model wasn't idle for any of that time — **the real cost of outsourcing is
+"writing the task book + acceptance review," not wall-clock time.**
 
 ```bash
-timeout 900 pi -p "讀取目前工作目錄下的 TASK.md 並照著做。" \
+timeout 900 pi -p "Read TASK.md in the current working directory and follow it." \
   --provider <provider> --model <model> --thinking off \
   --tools read,write --no-session --no-context-files --no-skills --no-extensions \
   --mode json > task1.json 2>&1 &
 ```
 
-**二、一次寫好多份任務書，然後量出併發寬度再 fan out。**
+**Two: write a whole batch of task books first, then measure concurrency width before fanning out.**
 
-任務書先批次寫完（`TASK1.md`、`TASK2.md`…）——寫的時候你腦子還在同一個脈絡裡，
-一次寫十份比分十次回頭想便宜得多。
+Write task books in a batch (`TASK1.md`, `TASK2.md`…) — while writing them your head is still in the same
+context, and writing ten at once is much cheaper than context-switching back ten separate times.
 
-⚠ **本文舊版寫「本機端點多半是序列化的，同時開兩個只會互相拖慢」。那句話是錯的，
-至少對 MLX／vLLM 這類端點是錯的。** 實測（2026-08-20，`Qwen3.8-27B-oQ4e-mtp`）。
+⚠ **An earlier version of this document said "local endpoints are mostly serialized, running two at once just
+slows them both down." That statement is wrong, at least for MLX/vLLM-style endpoints.** Measured
+(2026-08-20, `Qwen3.8-27B-oQ4e-mtp`).
 
-**先看小批量（3 份與 6 份任務，最小任務書）：**
+**Small batches first (3 and 6 tasks, minimal task books):**
 
-| 併發寬度 | wall | 每份成本 | 對比單發 |
+| Concurrency width | Wall | Cost per task | vs. single dispatch |
 |---|---|---|---|
 | 1 | 37s | 37s | — |
 | 3 | 56s | 18.7s | 1.98× |
 | 6 | 118s | 19.7s | 1.88× |
 
-看起來「寬度 3 就飽和」。**那個結論是錯的，而它錯的方式值得記下來：批量太小，
-看不到波邊界的浪費。**
+Looks like "it saturates at width 3." **That conclusion is wrong, and the way it's wrong is worth recording:
+the batch was too small to see the wave-boundary waste.**
 
-**同一批 10 份任務、只換寬度的受控實驗：**
+**Controlled experiment, same 10-task batch, only width changed:**
 
-| 併發寬度 | wall（10 份） | 每份成本 |
+| Concurrency width | Wall (10 tasks) | Cost per task |
 |---|---|---|
 | 3 | 247s | 24.7s |
 | **8** | **198s** | **19.8s** |
-| 10（不限） | 225s | 22.5s |
+| 10 (unbounded) | 225s | 22.5s |
 
-寬度 8 比寬度 3 **快 1.25 倍**。而快的原因不是 GPU 有更多餘裕——是
-**shell 端的寬度限制自己製造了等待**：`while [ $(jobs -rp | wc -l) -ge W ]; do sleep 2; done`
-每 2 秒才輪詢一次，而且要等整波最慢的那一份做完才補下一個。端點自己排隊的效率
-比在 shell 排隊高，它一有空位就立刻開始下一個請求。
+Width 8 is **1.25× faster** than width 3. And the reason isn't more headroom on the GPU — it's that
+**the shell-side width limit is manufacturing its own waiting**: `while [ $(jobs -rp | wc -l) -ge W ]; do sleep 2; done`
+only polls every 2 seconds, and it has to wait for the slowest task in the current wave before starting the next
+one. The endpoint's own internal queueing is more efficient than shell-side queueing — it starts the next request
+the instant a slot frees up.
 
-**結論：寬度 6–8，而且不要再細調。** 8 與 10 差 14%，那已經接近單次量測的變異；
-繼續調的收益比雜訊小。批量小於 6 的時候寬度等於批量就好。
+**Conclusion: width 6–8, and stop tuning past that.** 8 vs. 10 differ by 14%, already close to run-to-run
+measurement noise; further tuning buys less than the noise. When the batch is smaller than 6, just set width
+equal to batch size.
 
-⚠⚠ **但上面兩張表量的都是「輕任務」（讀一個檔案、寫幾行），而最佳寬度
-取決於任務重量。** 同一天用寬度 8 跑 29 份**重任務**（每份要改 15–61 處 markup
-＋刪同樣多行 CSS）的結果：
+⚠⚠ **But both tables above measured "light tasks" (read one file, write a few lines), and the optimal width
+depends on task weight.** Same day, width 8, running 29 **heavy tasks** (each editing 15–61 markup spots plus
+deleting the same number of CSS lines):
 
-- 端點的生成吞吐從約 **50 tok/s 掉到 14.6 tok/s**（使用者從伺服器端看到的）
-- 29 份裡 **5 份撞到 `timeout 1500`**，其中 2 份留下**改了一半的檔案**
-- wall 2772 秒
+- The endpoint's generation throughput dropped from about **50 tok/s to 14.6 tok/s** (as seen from the server side)
+- **5 of the 29 hit `timeout 1500`**, and 2 of those left **half-edited files** behind
+- Wall time 2772 seconds
 
-**重任務的寬度要降到 2–3。** 判斷「重不重」不要看檔案行數，看**它要產出多少字**
-（要改幾處）。輕任務 8、重任務 3——而且**先問一次伺服器端現在的 tok/s**，
-那比任何 wall-clock 量測都直接：掉到平常的三分之一就是開太寬了。
+**Heavy tasks need width dropped to 2–3.** Don't judge "heavy" by file line count — judge it by **how much it
+has to produce** (how many spots it edits). Light task = 8, heavy task = 3 — and **check the server's current
+tok/s first**; that's more direct than any wall-clock measurement: dropping to a third of normal means the width
+is too wide.
 
-**開太寬的代價不只是慢**：逾時會留下半成品（見 `references/verifying.md` 的
-「『逾時』不等於『什麼都沒做』」），而半成品在這種
-「加 utility ＋ 刪宣告」的兩步編輯裡會**靜默地丟掉樣式**。
+**Going too wide costs more than speed**: a timeout leaves half-finished work behind (see "'timed out' doesn't
+mean 'did nothing'" in `references/verifying.md`), and in this "add a utility + delete a declaration" two-step
+edit, half-finished work **silently drops styles.**
 
-真實編輯任務的收益：12 份「改一個 Svelte 檔」，序列化總和 1637 秒，
-寬度 3 的 wall 602 秒（2.72×）。編輯比審查貴（50s/份 對 20s/份），因為它要讀目標檔。
+Payoff on a real editing task: 12 dispatches of "edit one Svelte file," 1637 seconds serialized total, 602
+seconds wall at width 3 (2.72×). Editing is more expensive than review (50s/task vs. 20s/task), because it has to
+read the target file.
 
-**想再快就減少每份任務的 token，不是加寬。** 上面那 12 份每一份都要讀
-「任務書＋樣板檔＋目標檔」，而樣板檔（96 行）被重讀了 12 次——把需要的寫法
-直接內嵌進任務書就省掉那 12 次。GPU 吃的是 token，不是任務數。
+**To go faster still, cut tokens per task, not width.** Each of those 12 tasks had to read "task book + template
+file + target file," and the template file (96 lines) got re-read 12 times — inlining the needed pattern directly
+into the task book saves those 12 re-reads. The GPU is spending tokens, not task-count.
 
-**要量的時候用真實批量，不要用 3 份。** 用同一批 ≥10 份的任務跑兩次（寬度 3 與 8）：
+**When measuring, use a real-sized batch, not 3 tasks.** Run the same batch of ≥10 tasks twice (width 3 and width 8):
 
 ```bash
 S=$(date +%s)
@@ -166,7 +176,7 @@ done; wait
 echo "wall=$(( $(date +%s) - S ))s"
 ```
 
-量完之後用一個固定寬度的佇列：
+Once measured, use a fixed-width queue:
 
 ```bash
 WIDTH=8
@@ -176,64 +186,71 @@ for t in TASK-*.md; do
 done; wait
 ```
 
-⚠ 不限寬度全部丟出去**不會更快**（實測 10 併發 225s vs 寬度 8 的 198s），
-而且最後一份要等前面排完——批量大的時候那個等待會逼近 `timeout` 的上限。
+⚠ Throwing everything out with no width limit **is not faster** (measured: 10-way unbounded 225s vs. width-8
+198s), and the last one has to wait for everything ahead of it to clear — on a large batch, that wait creeps
+toward the `timeout` ceiling.
 
-⚠ 兩件事要一起顧：**強模型在佇列跑的時候不要閒著，但也不要動同一批檔案。**
-派工在遠端端點，本機 CPU 是空的，所以這段時間正好用來做只有強模型做得了的判斷
-（另一個檔案的架構決定、瀏覽器實測）。挑不同的檔案就不會撞。
+⚠ Two things to keep in mind together: **the strong model shouldn't sit idle while the queue runs, but it also
+shouldn't touch the same batch of files.** The dispatched work runs on a remote endpoint, the local CPU is idle,
+so this is exactly the window for the judgment calls only the strong model can make (architecture decisions on a
+different file, hands-on measurement in a browser). Pick a different file and there's no collision.
 
-**三、驗收要腳本化，不要每次用眼睛看。**
-固定四件事，寫成一支能重跑的檢查：
-
-```bash
-git diff --stat                    # 只准動被點名的檔案
-git status --short                 # 有沒有多出不該有的檔案
-<測試指令>                          # 外部重跑，不接 | tail（會吃掉失敗碼）
-grep -nE "toBeDefined|expect\(true|\.skip" <產出檔>   # 廢測試
-```
-
-驗收一旦是一行指令，「要不要外包」就不再需要每次重新權衡——預設就是外包。
-
-**fan out 之後不要逐個看 diff，掃不變量。** 12 份產出逐個讀 diff 是好幾千行；
-而「這一批可能錯在哪」通常只有三四種形狀，每一種都是一行 grep。實例（一批
-「把全域 class 換成元件」的任務）：
+**Three: script the acceptance check, don't eyeball it every time.**
+Fix four things and write them into one rerunnable check:
 
 ```bash
-grep -rn 'variant="ghost"' src --include=*.svelte      # 對照表最容易對錯的那一格
-git diff -U0 | grep -E "^-.*(/\*|<!--)"                # 有沒有刪掉／改寫註解
-grep -rn 'class="[^"]*btn' src --include=*.svelte  # 舊寫法還剩幾處
+git diff --stat                    # only the named files should have changed
+git status --short                 # any files that shouldn't exist
+<test command>                     # rerun externally, don't pipe through | tail (swallows the failure code)
+grep -nE "toBeDefined|expect\(true|\.skip" <output-file>   # dead tests
 ```
 
-三行抓到了全部問題，而且**每一行對應一個具體的失敗模式**，不是「看起來對不對」。
-逐個看 diff 的成本會隨批量線性成長，掃不變量不會——這是 fan out 之所以划算的另一半。
+Once acceptance is a one-line command, "should this be outsourced" stops being something to re-weigh every time —
+outsourcing becomes the default.
 
-**什麼還是留給自己：診斷、探針、以及最後那一眼。** 這三件的共同點是**它們產生的是判斷，
-不是字元**。判斷沒辦法外包，但字元可以，而字元佔了工作量的絕大部分。
+**After fanning out, don't read each diff one by one — scan for invariants.** Reading 12 diffs one at a time is
+several thousand lines; **the ways a batch like this can go wrong usually reduce to three or four shapes**, and
+each one is a single line of grep. Example (a batch of "replace a global class with a component" tasks):
 
-## 「被中止」與「失敗」要分開處置
+```bash
+grep -rn 'variant="ghost"' src --include=*.svelte      # the cell in the lookup table most likely to be wrong
+git diff -U0 | grep -E "^-.*(/\*|<!--)"                # any comment deleted or rewritten
+grep -rn 'class="[^"]*btn' src --include=*.svelte  # how many old-pattern spots remain
+```
 
-派工丟背景之後，harness 或系統有可能在 pi 生成中途把它砍掉。實測遇過兩次，
-而它跟「模型做錯了」的處置完全相反——**中止要原樣重派，失敗要改任務書或換模型**。
+Three lines caught everything that mattered, and **each line maps to one specific failure mode**, not a vague
+"does this look right." The cost of reading diffs one by one grows linearly with batch size; scanning invariants
+doesn't — that's the other half of why fanning out pays off.
 
-三步分辨，順序不能顛倒：
+**What still stays with you: diagnosis, the probe, and the final look.** What these three have in common is that
+**they produce judgment, not characters.** Judgment can't be outsourced, but characters can — and characters are
+the overwhelming majority of the work.
 
-1. **看 log 有沒有跑完的那一行。** 我的鏈式腳本每份印一行 `── TASKn ──`、
-   最後印一行「跑完」。只有開頭沒有結尾＝中途斷的。
-2. **grep 目標字串。** 計數為 0＝那份任務一個字都沒寫進去。
-3. **⚠ 但第 2 步不能下結論**——pi 用的是 `edit`，理論上可能寫進去了卻不含你搜的字串。
-   **直接跑一次那個檔案的測試**：語法與語意都完好，才能確定它是「沒動」而不是
-   「動了一半」。
+## Treat "aborted" and "failed" as different, with opposite handling
 
-只有第 3 步能排除「寫壞了一半」。前兩步只能告訴你「大概沒動」。
+Once a dispatch is backgrounded, the harness or the system can kill it mid-generation. Measured twice, and the
+correct handling is the **opposite** of "the model got it wrong" — **an abort gets redispatched unchanged;
+a failure means rewrite the task book or switch models.**
 
-判準表：
+Three steps to tell them apart, in this order, don't skip ahead:
 
-| 現象 | 判定 | 處置 |
+1. **Check the log for the line that marks completion.** My chained script prints one `── TASKn ──` line per
+   task and a final "done" line. Only a start with no end = it was cut off mid-run.
+2. **Grep for the target string.** Count of 0 = the task never wrote a single character.
+3. **⚠ But step 2 alone is not conclusive** — pi uses `edit`, which in principle could have written something
+   that doesn't contain the string you searched for. **Run that file's tests directly**: only once both syntax
+   and semantics check out can you be sure it's "untouched" and not "half-edited."
+
+Only step 3 rules out "half-broken." The first two only tell you "probably untouched."
+
+Decision table:
+
+| Symptom | Verdict | Handling |
 |---|---|---|
-| 有 events 檔、目標檔沒變、測試仍綠 | 中止 | **原樣重派**，不要改任何東西 |
-| 沒有 events 檔 | 連第一個回合都沒跑完 | 原樣重派 |
-| 有 events 檔、目標檔變了但壞了 | 失敗 | 先讀自己的任務書（見 `references/task-books.md`），再懷疑模型 |
+| Events file exists, target file unchanged, tests still green | Aborted | **Redispatch unchanged**, don't touch anything |
+| No events file | Didn't even finish the first round | Redispatch unchanged |
+| Events file exists, target file changed but broken | Failed | Reread your own task book first (see `references/task-books.md`), then suspect the model |
 
-**不要因為「重派了兩次」就開始改任務書。** 我第一次遇到中止時差點去改一份其實正確的
-任務書——那會把一個好的配方改壞，然後在第三次重派時得到真正的失敗。
+**Don't start rewriting the task book just because "it's been redispatched twice."** The first time I hit an
+abort, I nearly rewrote a task book that was actually correct — that would have broken a good recipe, and then
+gotten a genuine failure on the third redispatch.
