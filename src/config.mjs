@@ -46,6 +46,10 @@ export const DEFAULTS = Object.freeze({
   provider: null,
   model: null,
   timeout_s: DEFAULT_TIMEOUT_S,
+  // null means "work it out" — see src/pi-command.mjs. Set pi_command to a string or an
+  // argv array to pin the launcher explicitly (the escape hatch when the Windows shim
+  // resolution cannot find an unusual install).
+  pi_command: null,
   ...PLUGIN_DEFAULTS,
   drafter_patterns: Object.freeze([...DEFAULT_DRAFTER_PATTERNS]),
 });
@@ -100,6 +104,9 @@ export function loadConfig(file = configPath()) {
     tools: optionalString(raw, "tools", PLUGIN_DEFAULTS.tools),
     no_context_files: typeof raw.no_context_files === "boolean" ? raw.no_context_files : PLUGIN_DEFAULTS.no_context_files,
     append_system_prompt: optionalString(raw, "append_system_prompt", PLUGIN_DEFAULTS.append_system_prompt),
+    pi_command: Array.isArray(raw.pi_command)
+      ? raw.pi_command.map(nonEmptyString).filter((p) => p !== null)
+      : nonEmptyString(raw.pi_command),
     drafter_patterns: Array.isArray(raw.drafter_patterns)
       ? raw.drafter_patterns.map(nonEmptyString).filter((p) => p !== null)
       : [...DEFAULTS.drafter_patterns],

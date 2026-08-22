@@ -40,6 +40,22 @@ Use the MCP tools; don't assemble CLI commands by hand:
 | `pi_transcript` | Drill in only when the verdict isn't enough |
 | `pi_stats` | Check token usage |
 
+**If those tools are not available in this session**, the plugin was installed or reloaded
+mid-session: Claude Code registers MCP servers at session start, so `/reload-plugins`
+restores the skills and hooks but not the tools, and nothing announces it. Restarting the
+session is the real fix. Until then use the CLI, which calls the same function behind
+`pi_dispatch` — do NOT hand-roll a runner around `src/dispatch.mjs`:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/bin/pi-dispatch" <task-book> --cwd <dir> --timeout 900
+```
+
+Writing your own runner looks easy and is not. `dispatch()` returns `{ handle, done }`, so
+awaiting just the outer call hands back an empty shell indistinguishable from a hung run;
+and counting what pi did means re-deriving `verdict.mjs` — a write is a
+`tool_execution_start` with the path in `args.path`, and one tool call fires 3-4 events
+that must be deduped by `toolCallId` or four writes read as twelve.
+
 **Two-stage dispatch**: dispatch the tests first (with the contract), confirm they genuinely fail, and fail where expected; then dispatch the implementation
 (with that failing test set, plus "do not touch the tests"). Put tests and implementation in the same task book and it will write tests that happen to pass whatever it wrote.
 

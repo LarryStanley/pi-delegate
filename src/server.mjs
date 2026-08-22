@@ -18,7 +18,12 @@ const text = (body, isError = false) => ({ content: [{ type: "text", text: body 
 
 export function realGitDiffStat(cwd) {
   try {
-    return execFileSync("git", ["diff", "--stat"], { cwd, encoding: "utf8" }).trim().split("\n").pop() ?? "";
+    // stderr is discarded, not inherited: outside a git repo `git diff --stat` prints its
+    // whole usage block, and with the default stdio that lands on the console of whoever
+    // called us — 20 lines of git help in the middle of a verdict.
+    return execFileSync("git", ["diff", "--stat"], {
+      cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
+    }).trim().split("\n").pop() ?? "";
   } catch {
     return "";
   }

@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { resolvePiCommand } from "./pi-command.mjs";
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, resolve as resolvePath } from "node:path";
 import { createJsonlSplitter } from "./jsonl.mjs";
@@ -101,7 +102,9 @@ export async function dispatch({
   appendSystemPrompt,
   timeoutS,
   sessionId,
-  piCommand = ["pi"],
+  // Resolved rather than hardcoded: `spawn("pi")` is ENOENT on Windows, where npm
+  // installs the global bin as a .cmd shim. See src/pi-command.mjs.
+  piCommand = resolvePiCommand({ configured: config.pi_command }),
   gitDiffStat = "",
 }) {
   const effectiveTimeoutS = timeoutS ?? config.timeout_s;

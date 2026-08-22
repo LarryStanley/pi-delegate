@@ -1,0 +1,85 @@
+#!/usr/bin/env node
+// Dispatches a task book to pi from the command line.
+//
+// This exists for one situation: the `pi_dispatch` MCP tool is not registered in the
+// current session. That happens whenever the plugin is installed or reloaded mid-session —
+// Claude Code registers MCP servers at session start, so `/reload-plugins` brings the
+// skills and hooks back but not the tools, and nothing in the transcript says so. Until
+// the session is restarted there is no `pi_dispatch` to call.
+//
+// Without this script the fallback is to import src/dispatch.mjs and drive it by hand,
+// which is a trap worth naming: dispatch() returns `{ handle, done }`, so awaiting only
+// the outer call yields an empty shell that looks exactly like a hung run; and turning the
+// raw event stream into "what did pi actually do" means re-deriving what verdict.mjs
+// already does — pi reports a write as `tool_execution_start` with the path in
+// `args.path`, and the same tool call fires 3-4 events that have to be deduped by
+// toolCallId or four writes read as twelve.
+//
+// So this calls createToolHandlers().pi_dispatch — the exact function behind the MCP tool,
+// not a parallel implementation — and prints the same verdict text.
+//
+// Usage:
+//   node bin/pi-dispatch <task-book> [--cwd DIR] [--timeout S] [--model M --provider P]
+//                                    [--thinking LEVEL] [--tools LIST] [--json]
+import { resolve } from "node:path";
+import { createToolHandlers } from "../src/server.mjs";
+
+const VALUE_FLAGS = new Set(["cwd", "timeout", "model", "provider", "thinking", "tools"]);
+
+const argv = process.argv.slice(2);
+const opts = {};
+const positional = [];
+for (let i = 0; i < argv.length; i += 1) {
+  const arg = argv[i];
+  if (!arg.startsWith("--")) {
+    positional.push(arg);
+    continue;
+  }
+  const name = arg.slice(2);
+  if (VALUE_FLAGS.has(name)) {
+    i += 1;
+    opts[name] = argv[i];
+  } else {
+    opts[name] = true;
+  }
+}
+const flag = (name) => opts[name];
+
+const taskFile = positional[0];
+if (!taskFile) {
+  console.error("Usage: pi-dispatch <task-book> [--cwd DIR] [--timeout S] [--model M --provider P] [--thinking LEVEL] [--tools LIST] [--json]");
+  process.exit(2);
+}
+
+const timeout = flag("timeout");
+const handlers = createToolHandlers();
+
+const result = await handlers.pi_dispatch({
+  task_file: resolve(taskFile),
+  cwd: resolve(flag("cwd") ?? process.cwd()),
+  // Every one of these stays undefined unless asked for, so the three-layer resolution
+  // (arguments -> config.json -> pi's own defaults) behaves exactly as it does over MCP.
+  model: flag("model"),
+  provider: flag("provider"),
+  thinking: flag("thinking"),
+  tools: flag("tools"),
+  timeout_s: timeout === undefined ? undefined : Number(timeout),
+  mode: "sync",
+});
+
+const body = result.content.map((c) => c.text).join("\n");
+
+if (opts.json) {
+  // The verdict text is what a human reads; --json is for a caller that wants to branch on
+  // it. status is parsed back out of the formatted text rather than plumbed separately, so
+  // the two can never disagree.
+  const status = body.match(/^status:\s*(\S+)/m)?.[1] ?? "unknown";
+  console.log(JSON.stringify({ status, is_error: Boolean(result.isError), verdict: body }, null, 2));
+} else {
+  console.log(body);
+}
+
+// A non-zero exit only for a dispatch that did not complete — so a shell caller can branch
+// without parsing, while a completed-but-unsatisfying run still exits 0 and leaves the
+// judgement to whoever reads the verdict.
+process.exit(result.isError || /^status:\s*(failed|timeout|aborted)/m.test(body) ? 1 : 0);
