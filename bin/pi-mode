@@ -1,0 +1,26 @@
+#!/usr/bin/env node
+// Reads or sets the per-project discipline mode.
+//
+// This exists instead of a `node -e "import('<abs path>/src/modes.mjs')"` one-liner in the
+// skill files. A dynamic import() of a bare absolute path is a POSIX-only trick: on
+// Windows, CLAUDE_PLUGIN_ROOT expands to `C:/Users/...`, and node's ESM loader rejects it
+// with ERR_UNSUPPORTED_ESM_URL_SCHEME ("Received protocol 'c:'") because it reads the
+// drive letter as a URL scheme. A file the loader resolves relative to itself has no such
+// problem, so the plugin root only ever has to reach a script path — never an import
+// specifier.
+import { MODES, getMode, setMode } from "../src/modes.mjs";
+
+const requested = process.argv[2];
+
+if (!requested) {
+  console.log(`Current mode: ${getMode(process.cwd())}`);
+  process.exit(0);
+}
+
+if (!MODES.includes(requested)) {
+  console.error(`Unknown mode '${requested}'. Expected one of: ${MODES.join(", ")}`);
+  process.exit(1);
+}
+
+setMode(process.cwd(), requested);
+console.log(`Mode set to ${getMode(process.cwd())}`);

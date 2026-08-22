@@ -1,0 +1,13 @@
+#!/usr/bin/env node
+// Arms a one-time bypass so the next Write/Edit passes the strict-mode guard.
+//
+// See bin/pi-mode for why this is a script rather than an inline `node -e "import(...)"`:
+// an absolute-path import specifier is rejected on Windows.
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { probeFlagPath } from "../src/guard.mjs";
+
+const flag = probeFlagPath();
+mkdirSync(dirname(flag), { recursive: true });
+writeFileSync(flag, "1");
+console.log("Probe bypass enabled: the next Write/Edit will go through");

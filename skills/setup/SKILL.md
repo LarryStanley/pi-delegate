@@ -79,7 +79,7 @@ Once the user answers, apply it (this also confirms the choice was actually reco
 if they picked the default):
 
 ```bash
-node -e "import('${CLAUDE_PLUGIN_ROOT}/src/modes.mjs').then(m => { m.setMode(process.cwd(), '<mode>'); console.log('Mode set to', m.getMode(process.cwd())); })"
+node "${CLAUDE_PLUGIN_ROOT}/bin/pi-mode" <mode>
 ```
 
 Replace `<mode>` with `off`, `soft`, or `strict`. This is exactly what `/pi-delegate:mode

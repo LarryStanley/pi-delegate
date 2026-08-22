@@ -1,6 +1,6 @@
 import { existsSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, relative, resolve, dirname, extname, basename } from "node:path";
+import { join, relative, resolve, dirname, extname, basename, sep } from "node:path";
 
 const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".svelte", ".py"]);
 const EXEMPT_PREFIXES = ["tasks/", "scripts/", "docs/"];
@@ -63,6 +63,16 @@ function cwdInsideSourceDir(cwd) {
     .some((segment) => segment.toLowerCase() === SOURCE_DIR);
 }
 
+// node:path's relative() emits the PLATFORM separator, so on Windows it returns
+// `src\\foo.ts`. Every prefix test below is written with a forward slash, so without this
+// normalization `startsWith("src/")` is false for every file on Windows and the guard
+// goes silently inert — strict mode stops blocking anything at all. Only rewrite when the
+// platform separator really is a backslash: on POSIX a backslash is a legal character in
+// a filename, and rewriting it there would corrupt the comparison instead of fixing it.
+export function normalizeRelSeparators(rel, platformSep = sep) {
+  return platformSep === "\\" ? rel.replaceAll("\\", "/") : rel;
+}
+
 export function isProtectedPath(filePath, { cwd, exists = existsSync, markerExists = existsSync } = {}) {
   const root = findProjectRoot(cwd, markerExists);
   const base = root ?? cwd;
@@ -77,7 +87,7 @@ export function isProtectedPath(filePath, { cwd, exists = existsSync, markerExis
   // On a case-sensitive filesystem this also treats a genuinely separate `SRC/`
   // directory as protected; for the same reasoning as above, that direction of false
   // positive is the acceptable one.
-  const relLower = rel.toLowerCase();
+  const relLower = normalizeRelSeparators(rel).toLowerCase();
   const ext = extname(filePath).toLowerCase();
 
   if (EXEMPT_EXTENSIONS.has(ext)) return false;

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isProtectedPath, consumeProbe } from "../src/guard.mjs";
+import { isProtectedPath, consumeProbe, normalizeRelSeparators } from "../src/guard.mjs";
 import { mkdtempSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -155,4 +155,28 @@ test("project roots are detected by more than .git (manifests such as package.js
   const byManifest = (p) => p === "/proj/package.json";
   assert.equal(isProtectedPath("/proj/src/foo.ts", { cwd: "/proj/src", exists: () => true, markerExists: byManifest }), true);
   assert.equal(isProtectedPath("/proj/lib/foo.ts", { cwd: "/proj/src", exists: () => true, markerExists: byManifest }), false);
+});
+
+// --- Windows separator handling -------------------------------------------------
+// node:path's relative() emits the platform separator, so on Windows every prefix test in
+// isProtectedPath (all written with "/") silently fails and strict mode stops blocking
+// anything. These pin the normalization directly, because relative() itself cannot be made
+// to produce a Windows-shaped path while the test runs on POSIX.
+
+test("normalizeRelSeparators rewrites backslashes when the platform separator is a backslash", () => {
+  assert.equal(normalizeRelSeparators("src\\foo.ts", "\\"), "src/foo.ts");
+  assert.equal(normalizeRelSeparators("src\\a\\b\\c.svelte", "\\"), "src/a/b/c.svelte");
+  assert.equal(normalizeRelSeparators("tasks\\note.ts", "\\"), "tasks/note.ts");
+});
+
+test("normalizeRelSeparators leaves POSIX paths untouched, backslashes included", () => {
+  assert.equal(normalizeRelSeparators("src/foo.ts", "/"), "src/foo.ts");
+  // On POSIX a backslash is a legal filename character; rewriting it would corrupt the
+  // comparison rather than fix it.
+  assert.equal(normalizeRelSeparators("src/we\\ird.ts", "/"), "src/we\\ird.ts");
+});
+
+test("a Windows-shaped relative path still reads as being inside src (the guard stays live)", () => {
+  const rel = normalizeRelSeparators("src\\foo.ts", "\\").toLowerCase();
+  assert.equal(rel.startsWith("src/"), true, "without normalization strict mode blocks nothing on Windows");
 });

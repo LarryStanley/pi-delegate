@@ -8,13 +8,13 @@ The user wants to set the pi-delegate mode to: $ARGUMENTS
 Run the following command (replace `<mode>` with `$ARGUMENTS`; only `off`, `soft`, or `strict` are accepted):
 
 ```bash
-node -e "import('${CLAUDE_PLUGIN_ROOT}/src/modes.mjs').then(m => { m.setMode(process.cwd(), '<mode>'); console.log('Mode set to', m.getMode(process.cwd())); })"
+node "${CLAUDE_PLUGIN_ROOT}/bin/pi-mode" <mode>
 ```
 
 If `$ARGUMENTS` is empty, just show the current mode instead:
 
 ```bash
-node -e "import('${CLAUDE_PLUGIN_ROOT}/src/modes.mjs').then(m => console.log('Current mode:', m.getMode(process.cwd())))"
+node "${CLAUDE_PLUGIN_ROOT}/bin/pi-mode"
 ```
 
 What the three modes do:

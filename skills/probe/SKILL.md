@@ -9,7 +9,7 @@ then write the recipe into a task book afterward.
 Create the one-time bypass flag:
 
 ```bash
-node -e "import('${CLAUDE_PLUGIN_ROOT}/src/guard.mjs').then(async g => { const {mkdirSync,writeFileSync}=await import('node:fs'); const {dirname}=await import('node:path'); const p=g.probeFlagPath(); mkdirSync(dirname(p),{recursive:true}); writeFileSync(p,'1'); console.log('Probe bypass enabled: the next Write/Edit will go through'); })"
+node "${CLAUDE_PLUGIN_ROOT}/bin/pi-probe"
 ```
 
 Then tell the user: **this flag is good for one use only** — it turns itself off automatically after
