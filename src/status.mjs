@@ -86,8 +86,32 @@ export function renderStatus(entries, { pid = process.pid, now = Date.now(), own
     `models=${models.join(",") || "-"}`,
   ].join(" ");
 
+  // Lines 3+ are one per running dispatch: its own start, its own model. Two dispatches
+  // ten minutes apart share nothing but a session, and a single aggregate `oldest` can
+  // only ever tell the truth about the older of them — so the reader is handed the parts
+  // and gives each dispatch a row carrying its own elapsed time.
+  //
+  // Oldest first, because that is the order the rows are read in: the dispatch that has
+  // been holding the endpoint longest is the one worth noticing, and it should not shuffle
+  // down the list as newer ones arrive.
+  //
+  // APPENDED rather than replacing anything on line 1, and that part is load-bearing. The
+  // reader is a separate file the user copies into ~/.claude by hand (step 4 of
+  // /pi-delegate:statusline), so writer and reader routinely run at different versions. An
+  // older reader stops after line 2 and still gets its aggregate; a newer reader falls back
+  // to the aggregate when these lines are absent. Neither direction of skew goes blank —
+  // which matters more here than almost anywhere, because a status line that renders
+  // nothing looks exactly like one with nothing to say.
+  const detail = running
+    .map((entry) => ({
+      started: Number.isFinite(entry?.startedAt) ? Math.floor(entry.startedAt / 1000) : 0,
+      model: sanitize(stripProvider(entry?.model ?? "")) || "-",
+    }))
+    .sort((a, b) => a.started - b.started)
+    .map(({ started, model }) => `started=${started} model=${model}`);
+
   // Line 2 is the owner, verbatim and alone, so nothing in it can be mistaken for a field.
-  return `${facts}\n${owner}`;
+  return [facts, owner, ...detail].join("\n");
 }
 
 // Writes atomically, and never throws.

@@ -74,7 +74,7 @@ test("writeStatus writes facts then owner, and clearStatus removes the file", ()
   assert.equal(writeStatus([{ verdict: null, startedAt: 1000 }], opts), true);
   assert.equal(
     readFileSync(path, "utf8"),
-    "pid=7 running=1 oldest=1 updated=2 models=-\n/tmp/cc-socks/9.sock\n",
+    "pid=7 running=1 oldest=1 updated=2 models=-\n/tmp/cc-socks/9.sock\nstarted=1 model=-\n",
   );
   assert.equal(clearStatus({ path }), true);
   assert.equal(existsSync(path), false);
@@ -83,6 +83,49 @@ test("writeStatus writes facts then owner, and clearStatus removes the file", ()
 // The whole ownership fix rests on this value matching what the status-line process reads
 // out of its own environment. Verified live: Claude Code puts CLAUDE_CODE_MESSAGING_SOCKET
 // in the status-line command's environment, the same value the writer keys its file from.
+// Lines 3+ are why a dispatch can have a row of its own. Line 1 keeps its aggregate so an
+// older reader still works — see the skew test in statusline-script.test.mjs.
+test("one line per running dispatch is appended, oldest first, settled ones excluded", () => {
+  const line = renderStatus([
+    { verdict: null, model: "omls/newer", startedAt: 5_000_000 },
+    { verdict: null, model: "omls/older", startedAt: 1_000_000 },
+    { verdict: { status: "completed" }, model: "omls/settled", startedAt: 2_000_000 },
+  ], { pid: 42, now: 9_000_000, owner: "/tmp/s.sock" });
+
+  const rows = line.split("\n").slice(2);
+  assert.deepEqual(rows, ["started=1000 model=older", "started=5000 model=newer"]);
+  assert.ok(!line.includes("settled"));
+});
+
+// Lines 1 and 2 are byte-identical to what they were before per-dispatch lines existed.
+// An older reader stops after line 2, so anything that shifted there would break it.
+test("appending per-dispatch lines leaves the first two lines untouched", () => {
+  const entries = [{ verdict: null, model: "omls/m", startedAt: 3_000 }];
+  const line = renderStatus(entries, { pid: 7, now: 9_000, owner: "/tmp/s.sock" });
+  assert.equal(facts(line), "pid=7 running=1 oldest=3 updated=9 models=m");
+  assert.equal(owner(line), "/tmp/s.sock");
+});
+
+test("a per-dispatch model is provider-stripped and space-free, like the aggregate", () => {
+  const line = renderStatus([{ verdict: null, model: "local/my model v2", startedAt: 1_000 }], { now: 9_000 });
+  const row = line.split("\n")[2];
+  assert.equal(row.split(" ").length, 2, row);
+  assert.match(row, /^started=1 model=my-model-v2$/);
+});
+
+// A dispatch enrolled in the reservation window has no startedAt yet. It still counts as
+// running, so it still gets a row; 0 is the reader's cue to show no elapsed rather than
+// an elapsed measured from 1970.
+test("a dispatch with no usable startedAt gets a row with started=0", () => {
+  const line = renderStatus([{ verdict: null, model: "omls/m" }], { now: 9_000 });
+  assert.equal(line.split("\n")[2], "started=0 model=m");
+});
+
+test("nothing running appends no per-dispatch lines at all", () => {
+  const line = renderStatus([{ verdict: { status: "completed" }, startedAt: 1 }], { now: 10, owner: "o" });
+  assert.equal(line.split("\n").length, 2);
+});
+
 test("the owner is the messaging socket, verbatim and unhashed", () => {
   assert.equal(ownerToken({ CLAUDE_CODE_MESSAGING_SOCKET: "/tmp/cc-socks/34699.sock" }), "/tmp/cc-socks/34699.sock");
   assert.equal(ownerToken({}), "");
