@@ -115,6 +115,12 @@ export const TOOL_DEFINITIONS = [
           type: "string",
           description: "Text appended to pi's system prompt (pi's --append-system-prompt). Nothing is appended by default.",
         },
+        resume_session_id: {
+          type: "string",
+          description:
+            "Continue an earlier dispatch instead of starting fresh: pi keeps the previous turns, so a follow-up " +
+            "needs only the new message. Omit it for a new conversation.",
+        },
       },
       required: ["task_file", "cwd"],
     },
@@ -248,7 +254,7 @@ export function createToolHandlers({
   return {
     async pi_dispatch({
       task_file, cwd, model, provider, mode = "async", timeout_s,
-      thinking, tools, no_context_files, append_system_prompt,
+      thinking, tools, no_context_files, append_system_prompt, resume_session_id,
     }) {
       if (!existsSync(task_file)) return text(`Task book does not exist: ${task_file}`, true);
       // Three-layer resolution: call arguments -> config.json -> pi's own defaults (no
@@ -266,7 +272,33 @@ export function createToolHandlers({
         );
       }
 
-      const sessionId = randomUUID().slice(0, 8);
+      // Resuming is what makes a conversation with pi possible: /pi-delegate:discuss needs
+      // turn N+1 to remember turn N. pi already owns the hard half — `--session-id` is
+      // "use exact project session ID, creating it if missing" — so handing back an id it
+      // has seen resumes that session off disk, and buildPiArgs has always passed it.
+      //
+      // Both guards below exist because the alternative is silent: pi would happily open a
+      // BRAND-NEW session for a typo'd id, and the caller would see a well-formed reply
+      // from an agent that had forgotten the entire conversation.
+      if (resume_session_id !== undefined && resume_session_id !== null) {
+        if (!registry.has(resume_session_id)) {
+          return text(
+            `Cannot resume "${resume_session_id}" — no dispatch with that session_id exists here. ` +
+            `Currently valid: ${registry.ids().join(", ") || "(none)"}. ` +
+            "Omit resume_session_id to start a new conversation.",
+            true,
+          );
+        }
+        // Two pi processes writing one session file is corruption, not concurrency.
+        if (!registry.get(resume_session_id).verdict) {
+          return text(
+            `Cannot resume "${resume_session_id}" — that dispatch is still running. ` +
+            "Wait for it (pi_status), steer it instead (pi_steer), or stop it (pi_abort).",
+            true,
+          );
+        }
+      }
+      const sessionId = resume_session_id ?? randomUUID().slice(0, 8);
       // Reserve the slot, then spawn. The other way round (the old version) meant a
       // throwing `registry.add` (a session_id collision) blew up after the child process
       // was already running, leaving an orphaned pi process nobody could reach — not even
@@ -279,7 +311,8 @@ export function createToolHandlers({
       // tool can get in" — that was wrong, and it is why pi_steer / pi_abort /
       // pi_transcript threw TypeError inside the window.) Hence requireHandle() runs first
       // in all three.
-      registry.add(sessionId, {
+      const enroll = registry.has(sessionId) ? registry.update : registry.add;
+      enroll(sessionId, {
         handle: null, done: null, verdict: null,
         cwd, taskFile: task_file, model: effectiveModel, provider: effectiveProvider,
         timeoutS: timeout_s ?? config.timeout_s,
