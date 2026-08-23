@@ -198,6 +198,49 @@ stopped and nothing said so. A connection is its own liveness signal, so `pi_dis
 itself when `/reload-plugins` restarts the server. The log file is still written — it is what
 `pi_result` reads back when a reload empties the in-memory registry.
 
+## Seeing a dispatch while it runs
+
+`/pi-delegate:statusline` adds a row to the Claude Code status line that exists only while a pi
+dispatch is in flight:
+
+```
+● pi ⇢ 2 running · 2 sessions · 3m12s · Qwen3.8-27B
+```
+
+The count is **machine-wide, not per-session**, on purpose. Every dispatch on this machine
+reaches the same endpoint, so what you need to know before starting another one is how many are
+already running anywhere — including in your other Claude Code window. The elapsed time is the
+oldest one still going, and it turns yellow at 5 minutes and red at 15, because "someone has
+been holding the endpoint for 18 minutes" should not require reading the line to notice.
+
+The leading dot breathes on a 10-second cycle. Its phase comes from the wall clock rather than
+a frame counter, so it looks the same whatever cadence Claude Code happens to rerun the status
+line at, and does not freeze mid-animation when the session goes quiet.
+
+Three constraints shaped how this is installed, none of them ours:
+
+- **Claude Code allows exactly one `statusLine`**, and a plugin's own `settings.json` may only
+  contain `agent` and `subagentStatusLine`. Adding this means writing to the user's global
+  settings, so `/pi-delegate:statusline` **probes the existing command by running it**, shows
+  before and after, backs up `settings.json`, and composes rather than replaces — the existing
+  status line runs untouched and the pi row goes underneath it.
+- **It needs `refreshInterval`.** Event-driven redraws go quiet while the session is idle, which
+  is exactly when an async dispatch is running. The timer reruns the *whole* status line
+  including the user's own, so the cost is stated up front rather than discovered.
+- **It cannot live in the subagent panel.** `subagentStatusLine` can override or hide the rows
+  Claude Code already renders for its own subagents, but there is no way to add one, and a pi
+  dispatch is not a Claude Code subagent.
+
+`scripts/statusline.sh` is a standalone reference implementation as well as the installed one:
+everything above `render` gathers facts, and `render` alone decides how they look. Edit `render`
+in your own copy (`~/.claude/pi-delegate/statusline.sh`) and nothing can break except the
+appearance.
+
+It is bash rather than Node deliberately. On every tick, a Node process that does nothing but
+read one small file measured 40-60ms of interpreter startup against ~100ms for a full powerline
+render — a 50% latency increase for one line of text. The status file is written as flat
+`key=value` pairs so bash can read it with word splitting and no parser.
+
 ## How a dispatch works
 
 ![Sequence diagram of one pi_dispatch call followed by a mid-run pi_steer, showing Claude, the MCP server, a pi child, and the provider](docs/diagrams/dispatch-sequence.svg)
@@ -221,6 +264,7 @@ implemented.
 | `skills/review/` | The second-opinion review flow, and why Claude adjudicates rather than relays |
 | `skills/discuss/` | Multi-turn consultation, and why replies are kept short |
 | `skills/critique/` | The bounded generator–critic loop: writing a decidable contract, why the critic never resumes, and when the gate is not worth it |
+| `skills/statusline/` | Composing the pi indicator with an existing status line: probing it rather than assuming, and what `refreshInterval` costs |
 
 ## Development
 

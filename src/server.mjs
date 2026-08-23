@@ -13,6 +13,7 @@ import { formatToolCalls, formatLastN, capped } from "./transcript.mjs";
 import { findCompletion, formatRecovered, unknownSessionMessage } from "./recover.mjs";
 import { createNotifier } from "./notifier.mjs";
 import { eventsSocketPath } from "./events-log.mjs";
+import { writeStatus, clearStatus } from "./status.mjs";
 import { eventsLogPath as sessionEventsLogPath } from "./events-log.mjs";
 
 // Re-exported so existing callers keep one import site; the reasoning for the per-session
@@ -350,6 +351,10 @@ export function createToolHandlers({
         handle: null, done: null, verdict: null,
         cwd, taskFile: task_file, model: effectiveModel, provider: effectiveProvider,
         timeoutS: timeout_s ?? config.timeout_s,
+        // Stamped here rather than when the child spawns, so the status line's elapsed
+        // time covers the reservation window too. A dispatch that is slow to start is
+        // still a dispatch you are waiting on.
+        startedAt: Date.now(),
       });
 
       let handle;
@@ -516,7 +521,17 @@ export async function main() {
   } catch (error) {
     process.stderr.write(`pi-delegate: completion notifications are unavailable (${error.message}); pi_status still works.\n`);
   }
-  const handlers = createToolHandlers({ notifier });
+
+  // The status line's data, refreshed on every registry mutation. Same standing as the
+  // notifier: decoration that may not be allowed to break the mechanism, which is why
+  // writeStatus swallows its own failures and the registry swallows this callback's.
+  const registry = createRegistry({ onChange: (entries) => writeStatus(entries) });
+  // Zero the file immediately. A predecessor that was killed rather than shut down leaves
+  // its count behind, and this session inherits its key — so without this, a status line
+  // can open reporting dispatches that died with the last process.
+  writeStatus([]);
+
+  const handlers = createToolHandlers({ notifier, registry });
   const version = JSON.parse(readFileSync(new URL("../.claude-plugin/plugin.json", import.meta.url), "utf8")).version;
 
   try {
@@ -533,6 +548,8 @@ export async function main() {
     // Release the socket on the way out so the next server (a /reload-plugins restart is
     // the common case) finds the address free rather than having to reclaim it.
     await notifier.close().catch(() => {});
+    // And take the status file with it, so nothing lingers claiming a pi is running.
+    clearStatus();
   }
 }
 

@@ -161,7 +161,34 @@ If the dispatch times out or never writes, that is itself informative — it's u
 `reasoning-missing` symptom from step 3 (a local model stuck "thinking" instead of acting).
 Point back at step 3's fix rather than guessing at a new cause.
 
-## 5. Close with what to do next
+## 5. Offer the status line indicator
+
+**Ask first.** This one writes to `~/.claude/settings.json`, which is the user's own global
+config and probably already has a status line in it.
+
+Explain what it is: a row that appears at the bottom of the screen while a pi dispatch is
+running — how many are in flight across every Claude Code session on this machine, how long
+the oldest has been going, and which model — and disappears entirely when nothing is running.
+The machine-wide count is the useful part when every dispatch shares one endpoint: it is how
+you notice another session is already holding it.
+
+Two things to say before they answer, because neither is visible from a screenshot:
+
+- Claude Code allows exactly **one** `statusLine`, and a plugin cannot ship its own. If they
+  already have one (claude-powerline, ccstatusline, a personal script), this composes with it
+  rather than replacing it — their line runs untouched and the pi row goes underneath.
+- It needs `refreshInterval`, which reruns **their** status line too, every couple of seconds
+  for as long as Claude Code is open. On a status line that shells out to `git`, that is a real
+  if small background cost.
+
+If they want it, invoke `/pi-delegate:statusline` and follow it — it probes their existing
+command by actually running it, shows before and after, and backs up `settings.json` before
+writing. Do not shortcut it from here; the whole point of that skill is that nothing is
+assumed about a setup you have not looked at.
+
+If they decline, say it can be added any time with `/pi-delegate:statusline`, and move on.
+
+## 6. Close with what to do next
 
 Tell the user setup is done, and summarize where things stand: the mode they picked, and
 what a dispatch will resolve to. Then point at:
@@ -172,6 +199,7 @@ what a dispatch will resolve to. Then point at:
 - `/pi-delegate:mode <mode>` — change the discipline mode later, any time.
 - `/pi-delegate:probe` — get a one-time bypass in `strict` mode to make a single hand-edit
   (a probe), before writing the verified recipe into a task book for pi.
+- `/pi-delegate:statusline` — add (or later remove) the live dispatch indicator in the status line.
 - `/pi-delegate:doctor` — re-run this environment check any time something seems off (after
   a `pi` upgrade, after editing `~/.pi/agent/models.json` by hand, after switching
   providers).
