@@ -232,9 +232,12 @@ Three constraints shaped how this is installed, none of them ours:
   settings, so `/pi-delegate:statusline` **probes the existing command by running it**, shows
   before and after, backs up `settings.json`, and composes rather than replaces — the existing
   status line runs untouched and the pi row goes underneath it.
-- **It needs `refreshInterval`.** Event-driven redraws go quiet while the session is idle, which
-  is exactly when an async dispatch is running. The timer reruns the *whole* status line
-  including the user's own, so the cost is stated up front rather than discovered.
+- **It needs `refreshInterval`, set to `1`.** Event-driven redraws go quiet while the session is
+  idle, which is exactly when an async dispatch is running. `1` rather than something cheaper
+  because the row carries an elapsed seconds counter, and a counter refreshed every 2 seconds
+  skips numbers — 8s, 10s, 12s — which reads as broken rather than as slow. The timer reruns the
+  *whole* status line including the user's own (~10% of one core for a 100ms status line), so
+  the cost is stated up front rather than discovered.
 - **It cannot live in the subagent panel.** `subagentStatusLine` can override or hide the rows
   Claude Code already renders for its own subagents, but there is no way to add one, and a pi
   dispatch is not a Claude Code subagent.

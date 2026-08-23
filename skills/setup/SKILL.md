@@ -177,9 +177,9 @@ Two things to say before they answer, because neither is visible from a screensh
 - Claude Code allows exactly **one** `statusLine`, and a plugin cannot ship its own. If they
   already have one (claude-powerline, ccstatusline, a personal script), this composes with it
   rather than replacing it — their line runs untouched and the pi row goes underneath.
-- It needs `refreshInterval`, which reruns **their** status line too, every couple of seconds
-  for as long as Claude Code is open. On a status line that shells out to `git`, that is a real
-  if small background cost.
+- It needs `refreshInterval`, which reruns **their** status line too, once a second for as long
+  as Claude Code is open. On a status line that shells out to `git`, that is a real if small
+  background cost — roughly 10% of one core for a status line taking ~100ms.
 
 If they want it, invoke `/pi-delegate:statusline` and follow it — it probes their existing
 command by actually running it, shows before and after, and backs up `settings.json` before

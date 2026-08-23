@@ -75,12 +75,16 @@ Two things, and neither is obvious from the preview:
 - **`refreshInterval` is required, not decorative.** Without it the status line only reruns on
   conversation events, and those go quiet exactly when an async dispatch is running and the
   session is idle — which is the entire case this feature exists for. The recommended value is
-  `2` seconds.
+  **`1`**, the minimum Claude Code allows.
+- **Why `1` and not something cheaper:** the default row shows an elapsed seconds counter, and
+  a counter refreshed every 2 seconds skips numbers — 8s, 10s, 12s. That reads as broken rather
+  than as slow, and it is the first thing anyone notices. Anything above `1` needs the counter
+  taken out of `render` (show only minutes, or drop the duration) to look deliberate.
 - **`refreshInterval` reruns the whole thing, including their existing status line.** If theirs
-  shells out to `git` (most do), that is now running every 2 seconds for as long as Claude Code
-  is open. On this machine a full powerline render measured ~100ms, so 2 seconds is about 5% of
-  one core, continuously. If their probe in step 2 was slow, tell them the number you measured
-  and offer `3` instead.
+  shells out to `git` (most do), that is now running every second for as long as Claude Code is
+  open. Use the timing you measured in step 2: a status line taking ~100ms is roughly 10% of one
+  core at `1`, 5% at `2`. If their probe was slow, say the number and offer `2` or `3` — paired
+  with editing `render` so the seconds counter is not left skipping.
 
 If they would rather not have the timer, the indicator still works — it just only updates when
 something else already caused a redraw. Say that plainly rather than talking them into the timer.
@@ -157,7 +161,7 @@ d = json.load(open(p)) if os.path.exists(p) else {}
 d['statusLine'] = {
     'type': 'command',
     'command': os.path.expanduser('~/.claude/pi-delegate/statusline-wrapper.sh'),
-    'refreshInterval': 2,
+    'refreshInterval': 1,
 }
 json.dump(d, open(p, 'w'), indent=2)
 open(p, 'a').write('\n')
