@@ -1,5 +1,7 @@
 # pi-delegate
 
+[English](README.md) · [繁體中文](README.zh-TW.md)
+
 A written rule telling Claude to delegate its coding work does not hold: on this repo's own history,
 roughly 80% of the characters that got committed were still typed by the main model. pi-delegate
 replaces the paragraph with a hook — Claude stays tech lead and writes the task book and the verdict,
