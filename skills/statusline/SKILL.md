@@ -79,12 +79,16 @@ Two things, and neither is obvious from the preview:
 - **Why `1` and not something cheaper:** the default row shows an elapsed seconds counter, and
   a counter refreshed every 2 seconds skips numbers — 8s, 10s, 12s. That reads as broken rather
   than as slow, and it is the first thing anyone notices. Anything above `1` needs the counter
-  taken out of `render` (show only minutes, or drop the duration) to look deliberate.
+  taken out of `fmt_elapsed` (show only minutes, or drop the duration) to look deliberate.
 - **`refreshInterval` reruns the whole thing, including their existing status line.** If theirs
   shells out to `git` (most do), that is now running every second for as long as Claude Code is
   open. Use the timing you measured in step 2: a status line taking ~100ms is roughly 10% of one
   core at `1`, 5% at `2`. If their probe was slow, say the number and offer `2` or `3` — paired
-  with editing `render` so the seconds counter is not left skipping.
+  with editing `fmt_elapsed` so the seconds counter is not left skipping.
+- **How many rows it can take.** There is one row per running dispatch, capped at `MAX_ROWS`
+  (4) with a `… +N more` line beyond that. Added to whatever they already have, that is their
+  existing height plus up to five. Worth saying out loud to anyone whose status line is already
+  two or three lines tall; `MAX_ROWS` is theirs to lower.
 
 If they would rather not have the timer, the indicator still works — it just only updates when
 something else already caused a redraw. Say that plainly rather than talking them into the timer.
@@ -104,11 +108,19 @@ a new directory, so a `settings.json` pointing into it breaks on the next `/plug
 silently, because a status line that fails just doesn't render.
 
 **This copy is also where the user's taste goes.** The script separates gathering from
-rendering: everything above `render` collects `$running`, `$elapsed` and `$models` — including
-deciding which status files are this session's — and `render` alone decides what they look
-like. If they want different wording, no breathing dot, a different colour, their own glyphs —
-edit `render` in their copy. Offer this; it is the point of the file being shaped that way.
-Leave everything above it alone, ownership check included.
+rendering: everything above the `render` banner collects the facts — including deciding which
+status files are this session's — and `render_row` alone decides what a row looks like. It is
+called once per running dispatch with `started`, `count` and `model`, plus `$DOT` and `$now`;
+`fmt_elapsed` formats the duration and `MAX_ROWS` caps how many rows print. If they want
+different wording, no breathing dot, a different colour, their own glyphs, minutes instead of
+seconds, fewer rows — that is all inside those three. Offer this; it is the point of the file
+being shaped that way. Leave everything above the banner alone, ownership check included.
+
+**One row per dispatch is the contract, not a detail.** Two dispatches started ten minutes
+apart get a row each, with their own elapsed and their own colour threshold, because a single
+aggregated row could only ever tell the truth about the older of them. If they edit
+`render_row` into something multi-line, `MAX_ROWS` stops bounding the height and the status bar
+can grow without limit — worth saying if they start redesigning it.
 
 ## 5. Compose, back up, and write
 

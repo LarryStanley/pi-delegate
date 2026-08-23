@@ -47,18 +47,35 @@ case "${OSTYPE:-}" in
   msys*|cygwin*) WINPIDS=" $(ps -W 2>/dev/null | awk 'NR>1 && $4 ~ /^[0-9]+$/ {printf "%s ", $4}')" ;;
 esac
 
+# One row per running dispatch, newline separated, each row "started count model".
+#
+# `count` is 1 for a row that came from a per-dispatch line. It is only ever greater
+# against an OLDER writer, whose file carries just the aggregate — so the count travels
+# with the row instead of becoming a second code path in the renderer.
+NL=$'\n'
+ROWS=""
+ROW_COUNT=0
+
 running=0
-oldest=0
-models=""
 
 if [ -d "$STATUS_DIR" ]; then
   for f in "$STATUS_DIR"/*.status; do
     # An unmatched glob comes through as the literal pattern.
     [ -f "$f" ] || continue
 
-    pid=""; r=0; o=0; m=""; file_owner=""
-    { read -r line; read -r file_owner; } < "$f" || true
-    [ -n "${line:-}" ] || continue
+    pid=""; r=0; o=0; m=""; file_owner=""; line=""; detail=""
+    # Lines 1 and 2 are the aggregate and the owner; everything after is one line per
+    # dispatch. Read in this shell, not a pipeline, or every variable set here is lost.
+    n=0
+    while IFS= read -r ln || [ -n "$ln" ]; do
+      n=$(( n + 1 ))
+      case "$n" in
+        1) line="$ln" ;;
+        2) file_owner="$ln" ;;
+        *) [ -z "$ln" ] || detail="${detail}${ln}${NL}" ;;
+      esac
+    done < "$f"
+    [ -n "$line" ] || continue
 
     # With no owner of our own — run by hand, or an older Claude Code — there is nothing to
     # compare against and no second session to be confused with, so count everything. With
@@ -97,26 +114,56 @@ if [ -d "$STATUS_DIR" ]; then
     [ "$r" -gt 0 ] || continue
 
     running=$(( running + r ))
-    if [ "$o" -gt 0 ] && { [ "$oldest" -eq 0 ] || [ "$o" -lt "$oldest" ]; }; then
-      oldest="$o"
+
+    if [ -n "$detail" ]; then
+      # Per-dispatch lines, already sorted oldest-first by the writer.
+      #
+      # Note what is deliberately NOT done here: two dispatches on the same model are no
+      # longer collapsed into one entry. They used to be, because a single row could only
+      # show one elapsed time and repeating the model name bought nothing. A row each is
+      # the whole point now — the same model started ten minutes apart is two facts.
+      while IFS= read -r d; do
+        [ -n "$d" ] || continue
+        d_started=""; d_model="-"
+        for kv in $d; do
+          case "$kv" in
+            started=*) d_started="${kv#started=}" ;;
+            model=*)   d_model="${kv#model=}" ;;
+          esac
+        done
+        case "$d_started" in ''|*[!0-9]*) continue ;; esac
+        [ -n "$d_model" ] || d_model="-"
+        ROWS="${ROWS}${d_started} 1 ${d_model}${NL}"
+        ROW_COUNT=$(( ROW_COUNT + 1 ))
+      done <<EOF
+$detail
+EOF
+    else
+      # Version skew: an older server wrote the aggregate and nothing else. One summary
+      # row carrying the count is all that data supports, and it is exactly what this
+      # script printed for its whole life before per-dispatch rows existed. Silence would
+      # be the worse failure — see the Windows liveness bug, where nothing rendered and
+      # nothing said so.
+      [ -n "$m" ] || m="-"
+      ROWS="${ROWS}${o} ${r} ${m}${NL}"
+      ROW_COUNT=$(( ROW_COUNT + 1 ))
     fi
-    [ "$m" = "-" ] || models="${models},${m}"
   done
 fi
 
 # Nothing running: no line, no blank row, no trace.
 [ "$running" -gt 0 ] || exit 0
+[ "$ROW_COUNT" -gt 0 ] || exit 0
 
-# Two concurrent dispatches on the same model should not print it twice.
-dedup=""
-_ifs="$IFS"; IFS=','
-for m in $models; do
-  [ -n "$m" ] || continue
-  case ",$dedup," in *",$m,"*) continue ;; esac
-  dedup="${dedup:+$dedup,}$m"
-done
-IFS="$_ifs"
-models="$dedup"
+# Oldest first, across every file. The writer already sorts within one file, so this only
+# earns its fork when rows came from more than one — the hand-run and preview path, where
+# no owner is set and every session's file is read. It matters because MAX_ROWS below
+# DISCARDS rows: dropping the newest few is a choice, dropping whichever happened to be
+# concatenated last is an accident. `started` is the first field, so a numeric sort on the
+# line is a sort on the clock.
+if [ "$ROW_COUNT" -gt 1 ]; then
+  ROWS=$(printf '%s' "$ROWS" | sort -n)
+fi
 
 # PI_DELEGATE_NOW pins the clock. It exists so the breathing animation can be tested
 # deterministically, and so you can preview any moment while editing `render` below:
@@ -125,9 +172,6 @@ models="$dedup"
 #
 now="${PI_DELEGATE_NOW:-$(date +%s)}"
 case "$now" in ''|*[!0-9]*) now=$(date +%s) ;; esac
-elapsed=$(( now - oldest ))
-[ "$oldest" -gt 0 ] || elapsed=0
-[ "$elapsed" -ge 0 ] || elapsed=0
 
 # ---------------------------------------------------------------- helpers
 
@@ -169,36 +213,90 @@ color_mode() {
   esac
 }
 
+# The dot is identical on every row — its phase comes from the wall clock, not from a
+# per-row counter — so it is computed once here rather than forked per row. Rows pulsing
+# in unison also reads as one indicator rather than several competing ones.
+DOT=$(breathing_dot "$(color_mode)")
+ESC=$'\033'
+DIM="${ESC}[2m"
+OFF="${ESC}[0m"
+YELLOW="${ESC}[33m"
+RED="${ESC}[31m"
+
 # ---------------------------------------------------------------- render
 #
-# THIS IS THE PART YOU CHANGE. Everything it can use:
+# THIS IS THE PART YOU CHANGE. `render_row` is called once per running dispatch, with:
 #
-#   $running   dispatches in flight in THIS session (never another window's)
-#   $elapsed   seconds since the oldest one started
-#   $models    comma-separated, deduplicated, provider prefix already stripped
+#   $1  started   epoch seconds this dispatch began (0 when the writer did not know)
+#   $2  count     1 for a real dispatch; higher only for an older writer's aggregate row
+#   $3  model     provider prefix already stripped, guaranteed free of spaces
+#   $DOT          the breathing dot, already rendered for this tick
+#   $now          the clock, pinnable via PI_DELEGATE_NOW
 #
-# Keep it to one line and keep it short — the status bar has a width budget and the rest
-# of it belongs to whatever was already there.
+# Keep each row to ONE line. Rows are capped at MAX_ROWS, and a render that emitted two
+# lines per dispatch would blow the status bar's height budget past that cap silently.
 
-render() {
-  local esc=$'\033'
-  local dim="${esc}[2m" off="${esc}[0m"
-  local dot; dot=$(breathing_dot "$(color_mode)")
-  local dur; dur=$(fmt_elapsed "$elapsed")
+MAX_ROWS=4
+
+# The duration sits in a fixed-width right-aligned column so the model names line up down
+# the rows. That is the reason there are no `·` separators any more: with several rows the
+# eye scans the column, and punctuation between fixed columns is noise. 9 fits every shape
+# fmt_elapsed produces (`59s` … `100h30m`); anything longer just pushes its own row's model
+# right rather than breaking the others.
+DUR_WIDTH=9
+
+render_row() {
+  local started="$1" count="$2" model="$3"
+  local dim="$DIM" off="$OFF"
+
+  local elapsed=$(( now - started ))
+  [ "$started" -gt 0 ] || elapsed=0
+  [ "$elapsed" -ge 0 ] || elapsed=0
+
+  # Pad BEFORE colouring. Padding a string that already contains escape sequences counts
+  # their bytes as width, and every row would be misaligned by exactly the length of a
+  # colour code — which is invisible until the colour changes at a threshold.
+  local dur; dur=$(printf "%${DUR_WIDTH}s" "$(fmt_elapsed "$elapsed")")
 
   # Elapsed changes colour at two thresholds. Not decoration: a local endpoint serves one
-  # dispatch at a time, so "someone has been holding it for 18 minutes" is the single most
-  # actionable thing this line can tell you, and it should not need reading to notice.
+  # dispatch at a time, so "this one has been holding it for 18 minutes" is the single most
+  # actionable thing the line can say, and it should not need reading to notice.
+  #
+  # Per row now rather than per session, which is the substantive win of splitting them: an
+  # 18-minute dispatch goes red on its own row without dragging a 20-second one red too.
   local dur_color="$dim"
-  if   [ "$elapsed" -ge 900 ]; then dur_color="${esc}[31m"
-  elif [ "$elapsed" -ge 300 ]; then dur_color="${esc}[33m"
+  if   [ "$elapsed" -ge 900 ]; then dur_color="$RED"
+  elif [ "$elapsed" -ge 300 ]; then dur_color="$YELLOW"
   fi
 
-  printf '%s %spi ⇢%s %d running %s·%s %s%s%s %s·%s %s%s%s\n' \
-    "$dot" "$dim" "$off" "$running" \
-    "$dim" "$off" "$dur_color" "$dur" "$off" \
-    "$dim" "$off" "$dim" "$models" "$off"
+  # `3×` only when a row stands for more than one dispatch, which now happens only against
+  # an older writer whose file carries no per-dispatch lines. On a row that is definitionally
+  # one dispatch there is no count worth printing.
+  local prefix=""
+  [ "$count" -le 1 ] || prefix="${count}× "
+
+  printf '%s %spi%s%s%s%s%s  %s%s%s%s\n' \
+    "$DOT" "$dim" "$off" \
+    "$dur_color" "$dur" "$off" "" \
+    "$dim" "$prefix" "$model" "$off"
 }
 
-render
+shown=0
+while IFS= read -r row; do
+  [ -n "$row" ] || continue
+  shown=$(( shown + 1 ))
+  if [ "$shown" -gt "$MAX_ROWS" ]; then
+    # Never truncate in silence. A capped list that looks complete is a worse lie than one
+    # that says how much it is holding back.
+    printf '%s  … +%d more%s\n' "$DIM" "$(( ROW_COUNT - MAX_ROWS ))" "$OFF"
+    break
+  fi
+  # `model` is guaranteed space-free by src/status.mjs's sanitize, so splitting the row on
+  # whitespace cannot lose part of a name.
+  set -- $row
+  render_row "$1" "$2" "$3"
+done <<EOF
+$ROWS
+EOF
+
 exit 0
