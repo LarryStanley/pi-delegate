@@ -21,7 +21,7 @@
 import { connect } from "node:net";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { eventsSocketPath, isSessionScoped, sharedEventsLogPath } from "../src/events-log.mjs";
+import { eventsSocketPath, isSessionScoped, ownerIsGone, sharedEventsLogPath } from "../src/events-log.mjs";
 
 const RETRY_MS = 2000;
 // PI_DELEGATE_SOCKET is an override for tests and for anyone whose home directory
@@ -86,6 +86,13 @@ function attach() {
 }
 
 attach();
+
+// Stop when the session that owns this monitor is gone, instead of reconnecting forever to
+// a socket that is never coming back. Checked on a slow interval — this is housekeeping,
+// not a hot path.
+setInterval(() => {
+  if (ownerIsGone()) process.exit(0);
+}, 30_000);
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => process.exit(0));

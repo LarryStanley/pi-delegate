@@ -68,10 +68,23 @@ function toolPath(args) {
 // A single tool call fires 3-4 events (start / update* / end). Only look at start and
 // dedupe by toolCallId, or "4 files touched once each" gets misread as 12 touches.
 function uniqueToolCalls(events, toolNames) {
+  // A call that ENDED in an error changed nothing, and counting it overstates the verdict
+  // in the direction that matters most: files_written is what a reviewer trusts to know
+  // where to look. Seen live — write_count 2 on a task that created one file, because pi's
+  // empty edit was "rejected before applying" and the untouched TASK.md got listed anyway.
+  //
+  // Only an explicit isError === true disqualifies a call. A start with no end yet is still
+  // in flight, not failed: a poll reporting 0 writes while pi is midway through one would
+  // be its own kind of wrong.
+  const failed = new Set();
+  for (const event of events) {
+    if (event?.type === "tool_execution_end" && event.isError === true) failed.add(event.toolCallId);
+  }
   const seen = new Map();
   for (const event of events) {
     if (event?.type !== "tool_execution_start") continue;
     if (!toolNames.has(event.toolName)) continue;
+    if (failed.has(event.toolCallId)) continue;
     if (seen.has(event.toolCallId)) continue;
     seen.set(event.toolCallId, toolPath(event.args));
   }

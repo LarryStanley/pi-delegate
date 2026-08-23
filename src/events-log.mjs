@@ -87,3 +87,26 @@ export function isSessionScoped(env = process.env) {
 export function eventsSocketPath(env = process.env, platform = process.platform) {
   return socketPathFor(sessionKeyFrom(env) ?? "shared", platform, join(DIR(), "events"));
 }
+
+// Monitors accumulate: one observed on this machine from a plugin version two releases old,
+// started at 00:04 and still running at 10:30, reconnecting forever to a socket for a
+// session that had long since ended. Nothing ever told it to stop, because nothing knew the
+// session was over.
+//
+// The monitor is handed CLAUDE_PID — the pid of the `claude` process that owns it — and
+// that process exiting IS the session ending.
+//
+// Staying is the safe default in every ambiguous case. An extra idle process costs a few MB;
+// quitting a watcher whose session is still open costs every notification for the rest of
+// that session, which is the bug this is next to.
+export function ownerIsGone(env = process.env, kill = (pid) => process.kill(pid, 0)) {
+  const pid = Number(env.CLAUDE_PID);
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    kill(pid);
+    return false;
+  } catch (error) {
+    // EPERM means the process is alive and owned by someone else. Only ESRCH is death.
+    return error?.code === "ESRCH";
+  }
+}
