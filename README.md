@@ -150,6 +150,34 @@ The review command does not fix anything it finds. Reviewing and fixing in one m
 how a wrong finding becomes a committed change — confirmed findings become a task book,
 and go back through a normal dispatch.
 
+## Dispatching behind a critic gate
+
+`/pi-delegate:critique <task>` is a normal dispatch with one thing added: the work does not
+count as done because pi said it was done.
+
+| Role | Who | Sees |
+|---|---|---|
+| Contract | Claude, **written before anything is dispatched** | the task |
+| Generator | a pi session | the task and the contract |
+| Critic | a **second, independent** pi session, new every round | the contract and the diff — never the generator's reasoning |
+| Judge | Claude | the real code |
+
+A REJECT goes back to the generator via `resume_session_id`, for **at most three rounds**. Two
+asymmetries make that loop terminate: the generator resumes each round while the critic is
+always a fresh session (a critic carrying its own last verdict checks that its complaints were
+addressed instead of re-reading the code), and only a finding that names a contract item can
+block (a fresh critic can always produce new opinions, so unbounded scope means it never
+converges). Three rounds without convergence is reported as a contract defect rather than
+retried a fourth time.
+
+The critic's ACCEPT is evidence, not the gate — Claude still walks the contract against the
+real code, because two models agreeing with each other is not verification.
+
+Costs roughly 3-10× a plain dispatch, and against a local endpoint the rounds are serial
+wall-clock. Worth it where a mistake is expensive to find later (auth, money, migrations,
+public interfaces, silent failures); not worth it for internal tooling where the feedback loop
+is "run it and see".
+
 ## How you learn a dispatch finished
 
 Two channels, and only one of them is a guarantee.
@@ -192,6 +220,7 @@ implemented.
 | `skills/delegating-to-pi/` | The dispatch discipline itself: the four-way split, task books, acceptance, model choice |
 | `skills/review/` | The second-opinion review flow, and why Claude adjudicates rather than relays |
 | `skills/discuss/` | Multi-turn consultation, and why replies are kept short |
+| `skills/critique/` | The bounded generator–critic loop: writing a decidable contract, why the critic never resumes, and when the gate is not worth it |
 
 ## Development
 
