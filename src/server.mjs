@@ -205,13 +205,25 @@ export function createToolHandlers({
   // ever lands in a session that does not own the dispatch (the shared-log fallback in
   // src/events-log.mjs), that session can see at a glance that it is not theirs instead of
   // trying pi_result and getting "Unknown session_id".
+  // Returns null on success, or a human-readable reason on failure. It must NEVER throw:
+  // announcing a result is not part of producing it, and the old version let a failure to
+  // announce destroy the result itself (issues/1). A bad path would make .then throw after
+  // the real verdict was already stored, .catch would overwrite that verdict with
+  // failedVerdict() — reporting a dispatch that had written its files correctly as
+  // `failed`, carrying an mkdir error nothing to do with pi — and then call this same
+  // failing function again, throwing a second time with nothing left to catch it.
   function appendEventsLog(verdict, cwd) {
-    mkdirSync(dirname(logPath), { recursive: true });
-    const files = verdict.write_count === 1 ? "1 file written" : `${verdict.write_count} files written`;
-    appendFileSync(
-      logPath,
-      `pi dispatch ${verdict.session_id} ${verdict.status} in ${cwd} — ${files}. Collect it with pi_result session_id=${verdict.session_id}.\n`,
-    );
+    try {
+      mkdirSync(dirname(logPath), { recursive: true });
+      const files = verdict.write_count === 1 ? "1 file written" : `${verdict.write_count} files written`;
+      appendFileSync(
+        logPath,
+        `pi dispatch ${verdict.session_id} ${verdict.status} in ${cwd} — ${files}. Collect it with pi_result session_id=${verdict.session_id}.\n`,
+      );
+      return null;
+    } catch (error) {
+      return `the completion notification could not be written to ${logPath} (${error.message}), so no notification will arrive for this dispatch. Collect it with pi_result instead.`;
+    }
   }
 
   // registry.add reserves the slot before dispatchFn spawns anything (see the note in
@@ -342,15 +354,17 @@ export function createToolHandlers({
       }
       registry.update(sessionId, { handle, done });
 
-      done
+      // Settle the dispatch's own outcome FIRST, then try to announce it. Ordering them
+      // this way is the fix for issues/1: with announcement inside the same handler, a
+      // logging error was indistinguishable from a dispatch error and got promoted into
+      // one.
+      const settled = done
+        .then((verdict) => verdict)
+        .catch((error) => failedVerdict(sessionId, error))
         .then((verdict) => {
-          registry.update(sessionId, { verdict });
-          if (mode === "async") appendEventsLog(verdict, cwd);
-        })
-        .catch((error) => {
-          const verdict = failedVerdict(sessionId, error);
-          registry.update(sessionId, { verdict });
-          if (mode === "async") appendEventsLog(verdict, cwd);
+          const notifyFailed = mode === "async" ? appendEventsLog(verdict, cwd) : null;
+          registry.update(sessionId, { verdict, ...(notifyFailed ? { notifyFailed } : {}) });
+          return verdict;
         });
 
       if (mode === "async") {
@@ -362,7 +376,7 @@ export function createToolHandlers({
           "interactive CLI sessions only), poll pi_status.",
         );
       }
-      return text(formatVerdict(await done));
+      return text(formatVerdict(await settled));
     },
 
     // Fields aligned with spec §5: {status, elapsed_s, current_tool, files_touched}.
@@ -373,6 +387,9 @@ export function createToolHandlers({
             status: entry.verdict.status,
             elapsed_s: entry.verdict.duration_s,
             current_tool: null,
+            // The issue's core complaint: a lost notification looks exactly like "still
+            // running". When we KNOW it was lost, say so where the caller already looks.
+            ...(entry.notifyFailed ? { notify_failed: entry.notifyFailed } : {}),
             ...(verbose ? { files_touched: collapseRepeats(entry.verdict.files_written) } : { writes: entry.verdict.write_count }),
           }, null, 2));
         }
