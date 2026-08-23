@@ -34,6 +34,19 @@ STATUS_DIR="${PI_DELEGATE_STATUS_DIR:-$HOME/.claude/pi-delegate/status}"
 # containing a space is safe because the owner has a whole line to itself.
 OWNER="${PI_DELEGATE_OWNER:-${CLAUDE_CODE_MESSAGING_SOCKET:-}}"
 
+# Liveness needs a pid this shell can actually resolve, and on Windows it cannot. The pid
+# in a status file is node's `process.pid` — a WINDOWS pid — while Git Bash's `kill` only
+# resolves pids in the MSYS namespace. The two are unrelated numbers, so the gate below
+# rejected every status file and the pi row never rendered on Windows at all.
+#
+# `ps -W` is the MSYS escape hatch: it lists native Windows processes with the winpid in
+# column 4. Snapshot it ONCE per tick rather than per file — one fork on Windows, none
+# anywhere else, and the loop below stays free of subprocesses either way.
+WINPIDS=""
+case "${OSTYPE:-}" in
+  msys*|cygwin*) WINPIDS=" $(ps -W 2>/dev/null | awk 'NR>1 && $4 ~ /^[0-9]+$/ {printf "%s ", $4}')" ;;
+esac
+
 running=0
 oldest=0
 models=""
@@ -72,7 +85,14 @@ if [ -d "$STATUS_DIR" ]; then
 
     # The liveness gate. A server that was killed rather than shut down leaves its file
     # behind; its pid is the proof of whether that count still means anything.
-    kill -0 "$pid" 2>/dev/null || continue
+    if ! kill -0 "$pid" 2>/dev/null; then
+      # Not in our namespace. On Windows that proves nothing, so consult the winpid
+      # snapshot; everywhere else WINPIDS is empty and this stays a plain reject.
+      case "$WINPIDS" in
+        *" $pid "*) ;;
+        *) continue ;;
+      esac
+    fi
 
     [ "$r" -gt 0 ] || continue
 
