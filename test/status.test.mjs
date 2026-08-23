@@ -3,7 +3,12 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, existsSync, writeFileSync, chmodSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { renderStatus, writeStatus, clearStatus, statusFilePath } from "../src/status.mjs";
+import { renderStatus, writeStatus, clearStatus, statusFilePath, ownerToken } from "../src/status.mjs";
+
+// Line 1 is the facts the reader parses; line 2 is the owner, alone, so a socket path
+// containing a space cannot be mistaken for a field.
+const facts = (line) => line.split("\n")[0];
+const owner = (line) => line.split("\n")[1];
 import { createRegistry } from "../src/registry.mjs";
 
 const dir = () => mkdtempSync(join(tmpdir(), "pi-status-"));
@@ -14,7 +19,7 @@ test("running means enrolled and not yet settled", () => {
     { verdict: null, startedAt: 2_000_000 },
     { verdict: { status: "completed" }, startedAt: 500 },
   ], { pid: 42, now: 3_000_000 });
-  assert.match(line, /\brunning=2\b/);
+  assert.match(facts(line), /\brunning=2\b/);
 });
 
 // The reservation window is real: pi_dispatch enrolls the session before the child spawns,
@@ -22,7 +27,7 @@ test("running means enrolled and not yet settled", () => {
 // would blink 0 at exactly the moment a dispatch is starting.
 test("a reserved-but-unspawned dispatch counts as running", () => {
   const line = renderStatus([{ handle: null, done: null, verdict: null, startedAt: 10_000 }], { now: 20_000 });
-  assert.match(line, /\brunning=1\b/);
+  assert.match(facts(line), /\brunning=1\b/);
 });
 
 test("oldest is the earliest running start, in seconds, ignoring settled ones", () => {
@@ -31,7 +36,7 @@ test("oldest is the earliest running start, in seconds, ignoring settled ones", 
     { verdict: null, startedAt: 3_000_000 },
     { verdict: { status: "completed" }, startedAt: 1_000 },
   ], { now: 9_000_000 });
-  assert.match(line, /\boldest=3000\b/);
+  assert.match(facts(line), /\boldest=3000\b/);
 });
 
 test("models are deduplicated and lose their provider prefix", () => {
@@ -40,35 +45,67 @@ test("models are deduplicated and lose their provider prefix", () => {
     { verdict: null, model: "omlx/Qwen3.8-27B", startedAt: 2 },
     { verdict: null, model: "anthropic/claude-sonnet-5", startedAt: 3 },
   ], { now: 10 });
-  assert.match(line, /\bmodels=Qwen3\.8-27B,claude-sonnet-5\b/);
+  assert.match(facts(line), /\bmodels=Qwen3\.8-27B,claude-sonnet-5\b/);
 });
 
 // The reader splits this line on whitespace in bash. A space inside any value would
 // silently become an extra field and shift every key after it.
 test("a value containing spaces cannot break the reader's word splitting", () => {
   const line = renderStatus([{ verdict: null, model: "local/my model v2", startedAt: 1 }], { now: 10 });
-  const fields = line.split(" ");
+  const fields = facts(line).split(" ");
   assert.equal(fields.length, 5, `expected 5 fields, got: ${line}`);
   for (const field of fields) assert.match(field, /^[a-z]+=/);
 });
 
 test("no models still produces a placeholder field, not an empty one", () => {
-  const line = renderStatus([{ verdict: null, startedAt: 1 }], { now: 10 });
-  assert.match(line, /\bmodels=-$/);
+  const line = renderStatus([{ verdict: null, startedAt: 1 }], { now: 10, owner: "" });
+  assert.match(facts(line), /\bmodels=-$/);
 });
 
 test("nothing running renders running=0 and oldest=0", () => {
   const line = renderStatus([], { now: 10 });
-  assert.match(line, /\brunning=0\b/);
-  assert.match(line, /\boldest=0\b/);
+  assert.match(facts(line), /\brunning=0\b/);
+  assert.match(facts(line), /\boldest=0\b/);
 });
 
-test("writeStatus writes one line and clearStatus removes it", () => {
+test("writeStatus writes facts then owner, and clearStatus removes the file", () => {
   const path = join(dir(), "s.status");
-  assert.equal(writeStatus([{ verdict: null, startedAt: 1000 }], { path, pid: 7, now: 2000 }), true);
-  assert.equal(readFileSync(path, "utf8"), "pid=7 running=1 oldest=1 updated=2 models=-\n");
+  const opts = { path, pid: 7, now: 2000, owner: "/tmp/cc-socks/9.sock" };
+  assert.equal(writeStatus([{ verdict: null, startedAt: 1000 }], opts), true);
+  assert.equal(
+    readFileSync(path, "utf8"),
+    "pid=7 running=1 oldest=1 updated=2 models=-\n/tmp/cc-socks/9.sock\n",
+  );
   assert.equal(clearStatus({ path }), true);
   assert.equal(existsSync(path), false);
+});
+
+// The whole ownership fix rests on this value matching what the status-line process reads
+// out of its own environment. Verified live: Claude Code puts CLAUDE_CODE_MESSAGING_SOCKET
+// in the status-line command's environment, the same value the writer keys its file from.
+test("the owner is the messaging socket, verbatim and unhashed", () => {
+  assert.equal(ownerToken({ CLAUDE_CODE_MESSAGING_SOCKET: "/tmp/cc-socks/34699.sock" }), "/tmp/cc-socks/34699.sock");
+  assert.equal(ownerToken({}), "");
+  assert.equal(ownerToken({ CLAUDE_CODE_MESSAGING_SOCKET: "   " }), "");
+});
+
+// A path with a space is why the owner gets a line to itself rather than a sixth field.
+test("an owner containing a space cannot disturb the facts line", () => {
+  const line = renderStatus([{ verdict: null, startedAt: 1 }], { now: 10, owner: "/tmp/my socks/1.sock" });
+  assert.equal(facts(line).split(" ").length, 5);
+  assert.equal(owner(line), "/tmp/my socks/1.sock");
+});
+
+// The secret that sits beside the messaging socket in the environment.
+test("the messaging token never reaches the owner line", () => {
+  const line = renderStatus([], {
+    now: 1,
+    owner: ownerToken({
+      CLAUDE_CODE_MESSAGING_SOCKET: "/tmp/cc-socks/1.sock",
+      CLAUDE_CODE_MESSAGING_TOKEN: "super-secret-value",
+    }),
+  });
+  assert.ok(!line.includes("super-secret-value"));
 });
 
 test("clearStatus on a file that is not there is not an error", () => {

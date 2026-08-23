@@ -204,14 +204,22 @@ itself when `/reload-plugins` restarts the server. The log file is still written
 dispatch is in flight:
 
 ```
-● pi ⇢ 2 running · 2 sessions · 3m12s · Qwen3.8-27B
+● pi ⇢ 2 running · 3m12s · Qwen3.8-27B
 ```
 
-The count is **machine-wide, not per-session**, on purpose. Every dispatch on this machine
-reaches the same endpoint, so what you need to know before starting another one is how many are
-already running anywhere — including in your other Claude Code window. The elapsed time is the
-oldest one still going, and it turns yellow at 5 minutes and red at 15, because "someone has
-been holding the endpoint for 18 minutes" should not require reading the line to notice.
+The count is **this session's own**, and another Claude Code window's dispatches never appear
+in it. 0.13.0 summed across sessions — every dispatch reaches the same endpoint, so the
+machine-wide number looked like the useful one — and that was wrong within the hour: the other
+window showed `1 running` for a dispatch its own `pi_result` answers `Unknown session_id` to.
+A count you can see and cannot act on, in a window that dispatched nothing, is the shape of
+[issues/1](https://github.com/LarryStanley/pi-delegate/issues/1) all over again. Ownership now
+travels on line 2 of the status file as the writer's raw `CLAUDE_CODE_MESSAGING_SOCKET`, which
+Claude Code also puts in the status-line command's environment, so the reader decides ownership
+with a string comparison — no hashing, no subprocess on a path that runs every tick.
+
+The elapsed time is the oldest of your own still going, and it turns yellow at 5 minutes and red
+at 15, because "this has been running for 18 minutes" should not require reading the line to
+notice.
 
 The leading dot breathes on a 10-second cycle. Its phase comes from the wall clock rather than
 a frame counter, so it looks the same whatever cadence Claude Code happens to rerun the status

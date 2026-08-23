@@ -3,16 +3,28 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { sessionKeyFrom } from "./events-log.mjs";
 
-// One file per session, aggregated by the reader.
+// One file per session, and the reader shows only its own.
 //
 // Not one shared file: two Claude Code sessions in one project is a normal working
 // pattern (it is why the events log is keyed the way it is — see src/events-log.mjs), and
 // a single file would mean the two servers overwrite each other's count on every change.
 //
-// Aggregating across sessions in the READER is deliberate rather than a consequence. Every
-// pi on this machine goes to the same endpoint, so the number worth showing is how many
-// are running here in total: seeing that another session already has two in flight is what
-// tells you not to dispatch a third right now.
+// 0.13.0 had the reader SUM across sessions, on the theory that every pi reaches the same
+// endpoint so the machine-wide count is what you want before starting another. Reported
+// immediately, and correctly, as worse than noise: the other session's status line showed
+// `1 running` for a dispatch that session's own pi_result cannot collect — it answers
+// "Unknown session_id". A count you can see and cannot act on, surfaced in a window that
+// dispatched nothing, is exactly the shape of issues/1: a session told about work that is
+// not its own. The contention argument only ever justified knowing how many exist, never
+// counting someone else's as yours.
+//
+// Ownership therefore travels in the file, on line 2. The reader compares it to its own
+// CLAUDE_CODE_MESSAGING_SOCKET by string equality — verified present in the status-line
+// process's environment, the same value the writer keys its filename from. Written raw
+// rather than hashed so the comparison needs no sha256 subprocess on every tick, and put
+// on its own line so a path containing a space cannot break line 1's word splitting.
+//
+// CLAUDE_CODE_MESSAGING_TOKEN sits beside it in the environment and is a secret. Not this.
 const DIR = () => join(homedir(), ".claude", "pi-delegate", "status");
 
 export function statusDir() {
@@ -43,7 +55,15 @@ const stripProvider = (model) => {
   return slash === -1 ? String(model) : String(model).slice(slash + 1);
 };
 
-export function renderStatus(entries, { pid = process.pid, now = Date.now() } = {}) {
+// The value the reader compares against. Empty when Claude Code did not provide one, in
+// which case the reader falls back to attributing nothing and counting everything — the
+// hand-run and preview path, where there is no second session to be confused with.
+export function ownerToken(env = process.env) {
+  const socket = env.CLAUDE_CODE_MESSAGING_SOCKET;
+  return typeof socket === "string" && socket.trim() !== "" ? socket.trim() : "";
+}
+
+export function renderStatus(entries, { pid = process.pid, now = Date.now(), owner = ownerToken() } = {}) {
   // Running means "enrolled and not yet settled". That deliberately includes the window
   // between reserving the registry slot and the child actually spawning: during it a pi is
   // about to exist, and a status line that under-reports is worse than one that is early.
@@ -58,13 +78,16 @@ export function renderStatus(entries, { pid = process.pid, now = Date.now() } = 
   const starts = running.map((entry) => entry?.startedAt).filter((t) => Number.isFinite(t));
   const oldest = starts.length ? Math.floor(Math.min(...starts) / 1000) : 0;
 
-  return [
+  const facts = [
     `pid=${pid}`,
     `running=${running.length}`,
     `oldest=${oldest}`,
     `updated=${Math.floor(now / 1000)}`,
     `models=${models.join(",") || "-"}`,
   ].join(" ");
+
+  // Line 2 is the owner, verbatim and alone, so nothing in it can be mistaken for a field.
+  return `${facts}\n${owner}`;
 }
 
 // Writes atomically, and never throws.
@@ -72,13 +95,13 @@ export function renderStatus(entries, { pid = process.pid, now = Date.now() } = 
 // Never throws for the same reason appendEventsLog does not (issues/1): this is decoration.
 // A status line that cannot be updated is a cosmetic failure, and it may not be allowed to
 // turn into a dispatch failure. Returns true on success so a test can tell the difference.
-export function writeStatus(entries, { path = statusFilePath(), pid, now } = {}) {
+export function writeStatus(entries, { path = statusFilePath(), pid, now, owner } = {}) {
   try {
     mkdirSync(DIR(), { recursive: true });
     // Unique tmp name per write: two writes racing on one tmp path would have the second
     // rename a file the first is still filling.
     const tmp = `${path}.${process.pid}.${(writeStatus.seq = (writeStatus.seq ?? 0) + 1)}.tmp`;
-    writeFileSync(tmp, `${renderStatus(entries, { pid, now })}\n`);
+    writeFileSync(tmp, `${renderStatus(entries, { pid, now, ...(owner === undefined ? {} : { owner }) })}\n`);
     // rename over the destination is atomic, so a reader mid-tick sees either the old line
     // or the new one, never half of either.
     renameSync(tmp, path);

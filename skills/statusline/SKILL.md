@@ -55,11 +55,15 @@ only exists while a dispatch is in flight. To show them what it will look like, 
 
 ```bash
 mkdir -p ~/.claude/pi-delegate/status
-echo "pid=$$ running=2 oldest=$(( $(date +%s) - 192 )) updated=$(date +%s) models=Qwen3.8-27B" \
-  > ~/.claude/pi-delegate/status/preview.status
+{ echo "pid=$$ running=2 oldest=$(( $(date +%s) - 192 )) updated=$(date +%s) models=Qwen3.8-27B"
+  echo "$CLAUDE_CODE_MESSAGING_SOCKET"; } > ~/.claude/pi-delegate/status/preview.status
 "${CLAUDE_PLUGIN_ROOT}/scripts/statusline.sh"
 rm ~/.claude/pi-delegate/status/preview.status
 ```
+
+The second line is the owner: the session that wrote the file. The reader shows only files
+whose owner matches its own, so a preview written without it renders nothing — and so does
+another Claude Code window's real dispatch, which is the point.
 
 Show them **before and after** — their real output, then their real output with the pi row
 under it — and ask before writing anything.
@@ -91,15 +95,16 @@ cp "${CLAUDE_PLUGIN_ROOT}/scripts/statusline.sh" ~/.claude/pi-delegate/statuslin
 chmod +x ~/.claude/pi-delegate/statusline.sh
 ```
 
-The plugin's own path carries its version (`.../pi-delegate/0.12.0/...`) and every release gets
+The plugin's own path carries its version (`.../pi-delegate/0.13.1/...`) and every release gets
 a new directory, so a `settings.json` pointing into it breaks on the next `/plugin update` —
 silently, because a status line that fails just doesn't render.
 
 **This copy is also where the user's taste goes.** The script separates gathering from
-rendering: everything above `render` collects `$running`, `$sessions`, `$elapsed` and `$models`,
-and `render` alone decides what they look like. If they want different wording, no breathing
-dot, a different colour, their own glyphs — edit `render` in their copy. Offer this; it is the
-point of the file being shaped that way. Leave everything above it alone.
+rendering: everything above `render` collects `$running`, `$elapsed` and `$models` — including
+deciding which status files are this session's — and `render` alone decides what they look
+like. If they want different wording, no breathing dot, a different colour, their own glyphs —
+edit `render` in their copy. Offer this; it is the point of the file being shaped that way.
+Leave everything above it alone, ownership check included.
 
 ## 5. Compose, back up, and write
 

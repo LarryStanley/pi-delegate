@@ -20,13 +20,21 @@ STATUS_DIR="${PI_DELEGATE_STATUS_DIR:-$HOME/.claude/pi-delegate/status}"
 
 # ---------------------------------------------------------------- gather
 #
-# One file per Claude Code session (src/status.mjs writes them); this sums across all of
-# them. That is deliberate: every pi on this machine talks to the same endpoint, so the
-# useful number is the machine-wide one. Seeing that another session already has two in
-# flight is exactly what tells you not to start a third.
+# One file per Claude Code session (src/status.mjs writes them), and this counts ONLY the
+# one belonging to the session it is rendering for.
+#
+# 0.13.0 summed across sessions, reasoning that every pi reaches the same endpoint so the
+# machine-wide number is the useful one. That was wrong in practice: the other window
+# showed `1 running` for a dispatch its own pi_result answers "Unknown session_id" to — a
+# count you can see and cannot act on, in a session that dispatched nothing.
+#
+# Line 2 of each status file is its owner: the raw CLAUDE_CODE_MESSAGING_SOCKET of the
+# session that wrote it. Claude Code puts that same value in this script's environment
+# (verified), so ownership is a string comparison — no hashing, no subprocess, and a path
+# containing a space is safe because the owner has a whole line to itself.
+OWNER="${PI_DELEGATE_OWNER:-${CLAUDE_CODE_MESSAGING_SOCKET:-}}"
 
 running=0
-sessions=0
 oldest=0
 models=""
 
@@ -35,8 +43,17 @@ if [ -d "$STATUS_DIR" ]; then
     # An unmatched glob comes through as the literal pattern.
     [ -f "$f" ] || continue
 
-    pid=""; r=0; o=0; m=""
-    read -r line < "$f" || continue
+    pid=""; r=0; o=0; m=""; file_owner=""
+    { read -r line; read -r file_owner; } < "$f" || true
+    [ -n "${line:-}" ] || continue
+
+    # With no owner of our own — run by hand, or an older Claude Code — there is nothing to
+    # compare against and no second session to be confused with, so count everything. With
+    # one, require an exact match: a file we cannot attribute is not ours to report.
+    if [ -n "$OWNER" ] && [ "$file_owner" != "$OWNER" ]; then
+      continue
+    fi
+
     for kv in $line; do
       case "$kv" in
         pid=*)     pid="${kv#pid=}" ;;
@@ -60,7 +77,6 @@ if [ -d "$STATUS_DIR" ]; then
     [ "$r" -gt 0 ] || continue
 
     running=$(( running + r ))
-    sessions=$(( sessions + 1 ))
     if [ "$o" -gt 0 ] && { [ "$oldest" -eq 0 ] || [ "$o" -lt "$oldest" ]; }; then
       oldest="$o"
     fi
@@ -71,7 +87,7 @@ fi
 # Nothing running: no line, no blank row, no trace.
 [ "$running" -gt 0 ] || exit 0
 
-# Two sessions on the same model should not print it twice.
+# Two concurrent dispatches on the same model should not print it twice.
 dedup=""
 _ifs="$IFS"; IFS=','
 for m in $models; do
@@ -137,8 +153,7 @@ color_mode() {
 #
 # THIS IS THE PART YOU CHANGE. Everything it can use:
 #
-#   $running   total dispatches in flight, across every session on this machine
-#   $sessions  how many Claude Code sessions those are spread over
+#   $running   dispatches in flight in THIS session (never another window's)
 #   $elapsed   seconds since the oldest one started
 #   $models    comma-separated, deduplicated, provider prefix already stripped
 #
@@ -159,11 +174,8 @@ render() {
   elif [ "$elapsed" -ge 300 ]; then dur_color="${esc}[33m"
   fi
 
-  local scope=""
-  [ "$sessions" -gt 1 ] && scope="${dim} · ${sessions} sessions${off}"
-
-  printf '%s %spi ⇢%s %d running%s %s·%s %s%s%s %s·%s %s%s%s\n' \
-    "$dot" "$dim" "$off" "$running" "$scope" \
+  printf '%s %spi ⇢%s %d running %s·%s %s%s%s %s·%s %s%s%s\n' \
+    "$dot" "$dim" "$off" "$running" \
     "$dim" "$off" "$dur_color" "$dur" "$off" \
     "$dim" "$off" "$dim" "$models" "$off"
 }

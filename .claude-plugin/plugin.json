@@ -1,6 +1,6 @@
 {
   "name": "pi-delegate",
-  "version": "0.13.0",
+  "version": "0.13.1",
   "description": "Delegate implementation and tests to a local pi agent (using your own pi provider/model), with enforced dispatch discipline",
   "author": {
     "name": "stanley"
