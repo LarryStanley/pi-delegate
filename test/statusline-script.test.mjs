@@ -249,3 +249,25 @@ test("a real registry mutation renders through to the status line", async () => 
   registry.update("bbb", { verdict: { status: "completed" } });
   assert.equal(render(), "", "everything settled, so the row goes away again");
 });
+
+// Regression, Windows. The pid in a status file is node's `process.pid` — a WINDOWS pid —
+// while Git Bash's `kill -0` resolves only pids in the MSYS namespace. The two are
+// unrelated numbers, so the liveness gate rejected every status file and this script
+// printed nothing on Windows no matter how many dispatches were running.
+//
+// It was not a subtle failure, which is why it is worth a named test rather than trusting
+// the coverage above: on win32, 13 of the 18 tests in this file failed, and the 5 that
+// passed were exactly the ones asserting empty output. A bug whose symptom is "the feature
+// does not exist" is invisible to anyone who has not seen it work elsewhere.
+test("a live Windows pid survives the liveness gate", { skip: process.platform !== "win32" && "win32 only" }, () => {
+  const out = run({ "a.status": file(`pid=${LIVE} running=1 oldest=${NOW() - 5} updated=${NOW()} models=gemma-26b`) });
+  assert.match(out, /1 running/);
+  assert.match(out, /gemma-26b/);
+});
+
+// The winpid fallback must not degrade into a blanket pass. A killed server leaves its
+// file behind, and the pid is the only evidence that its count still means anything — if
+// the fallback accepted anything it could not disprove, the row would outlive the server.
+test("the Windows fallback still rejects a dead pid", { skip: process.platform !== "win32" && "win32 only" }, () => {
+  assert.equal(run({ "a.status": file(`pid=${DEAD} running=1 oldest=${NOW() - 5} updated=${NOW()} models=gemma-26b`) }), "");
+});
