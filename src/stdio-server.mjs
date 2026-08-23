@@ -90,9 +90,19 @@ export function serve({
   // writes and produce a line that is not valid JSON.
   let queue = Promise.resolve();
   const write = (payload) => {
-    queue = queue.then(() => {
-      output.write(`${JSON.stringify(payload)}\n`);
-    });
+    queue = queue
+      .then(() => {
+        output.write(`${JSON.stringify(payload)}\n`);
+      })
+      // Without this catch a failing write is an unhandled rejection, and Node has killed
+      // the process for that since v15 — silently, as far as the client is concerned: no
+      // stderr, no exit code, the tools just vanish from the tool list. Reported from a
+      // session whose volume filled up (EPIPE once the client is gone does the same).
+      //
+      // Recovering the chain matters as much as catching: `queue` is the single thread
+      // every later response is appended to, so a rejection left in place would poison
+      // every write for the rest of the session, long after the disk recovered.
+      .catch(onError);
   };
 
   // Requests still being served when input closes. Without tracking them, a `serve()` that

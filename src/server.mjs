@@ -14,6 +14,7 @@ import { findCompletion, formatRecovered, unknownSessionMessage } from "./recove
 import { createNotifier } from "./notifier.mjs";
 import { eventsSocketPath } from "./events-log.mjs";
 import { writeStatus, clearStatus } from "./status.mjs";
+import { installFatalLog, recordFatal } from "./fatal-log.mjs";
 import { eventsLogPath as sessionEventsLogPath } from "./events-log.mjs";
 
 // Re-exported so existing callers keep one import site; the reasoning for the per-session
@@ -564,7 +565,13 @@ export async function main() {
 // pathToFileURL does the platform-correct conversion (drive letter, separators, and
 // percent-escaping of characters that are legal in a path but not in a URL).
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+  // Before anything else: whatever kills this process from here on gets a line in
+  // events.log, which the monitor prints. The server's stderr goes to the plugin host, not
+  // to the session, so without this a crash reaches the user as nothing but tools quietly
+  // missing from the tool list.
+  installFatalLog();
   main().catch((error) => {
+    recordFatal("startup", error);
     console.error(error);
     process.exit(1);
   });
