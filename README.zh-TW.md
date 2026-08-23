@@ -1,5 +1,5 @@
 <!-- 這份翻譯對應的 README.md 版本；用 `git hash-object README.md` 比對，不一樣就是落後了。
-     synced-with-blob: 6f96bb8f5f9bf86445c420fe073c26ee753eba72 -->
+     synced-with-blob: a52b4ce9682fa8ce45574f8028ec466168aebc69 -->
 
 # pi-delegate
 
@@ -7,7 +7,10 @@
 
 在 Claude Code 裡直接叫用本地的 [`pi`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) agent：Claude 寫任務書、驗收結果，pi 寫原始碼和測試。
 
-![A Claude Code session: Claude reads the source, writes a task book, calls pi_dispatch, and three pi rows appear under the user's own status line with their elapsed times](docs/diagrams/statusline-mockup.svg)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/statusline-mockup.svg">
+  <img alt="A Claude Code session: Claude reads the source, writes a task book, calls pi_dispatch, and three pi rows appear under the user's own status line with their elapsed times" src="docs/diagrams/statusline-mockup-light.svg">
+</picture>
 
 *Claude 讀程式碼並寫下契約；`pi_dispatch` 把要寫的部分交給 pi。狀態列下方的每一列代表這一個視窗的一次 dispatch，一列一個，當最後一個結束時就會消失。*
 

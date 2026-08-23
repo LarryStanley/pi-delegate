@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 900 534" width="900" height="534" xmlns="http://www.w3.org/2000/svg"
+     font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
+
+  <!-- Solarized Light on a white page, paired with statusline-mockup.svg for dark mode via
+       <picture> in the README. Same geometry, same text: only the palette differs, so the two
+       stay in sync by being edited together.
+
+       Sized for GitHub's README column (~830px), not for a full-width screenshot. A wider
+       canvas is scaled down there, and 13.5px type at 1160 wide arrives as 9.7px — which is
+       how the first version of this became unreadable on the page it was drawn for.
+       No external font import: an SVG rendered as an image cannot load one, so every glyph
+       position is an explicit coordinate rather than a text run the font metrics decide. -->
+
+  <rect width="900" height="534" fill="#ffffff"/>
+
+  <!-- ================================ window chrome ================================ -->
+  <rect x="28" y="24" width="844" height="486" rx="10" fill="#fdf6e3" stroke="#ded8c4" stroke-width="1"/>
+  <path d="M 28 34 a 10 10 0 0 1 10 -10 h 824 a 10 10 0 0 1 10 10 v 22 h -844 z" fill="#eee8d5"/>
+  <line x1="28" y1="56" x2="872" y2="56" stroke="#ded8c4" stroke-width="1"/>
+  <circle cx="52" cy="40" r="4.5" fill="#93a1a1"/>
+  <circle cx="70" cy="40" r="4.5" fill="#93a1a1"/>
+  <circle cx="88" cy="40" r="4.5" fill="#93a1a1"/>
+  <text x="450" y="45" fill="#93a1a1" font-size="12" text-anchor="middle">claude — ~/code/api</text>
+
+  <!-- ================================== transcript ================================== -->
+  <g font-size="15">
+    <text x="52" y="94"  fill="#586e75">&gt; refactor the token-refresh path in the auth middleware</text>
+
+    <text x="52" y="132" fill="#657b83">● Read src/auth/middleware.js, src/auth/refresh.js</text>
+    <text x="52" y="160" fill="#657b83">● Wrote tasks/auth-refresh.md — the contract, not the code</text>
+
+    <text x="52" y="198" fill="#586e75">● pi_dispatch(task_file: "tasks/auth-refresh.md")</text>
+    <text x="70" y="226" fill="#93a1a1">└ dispatched · session 7f3a2c</text>
+
+    <text x="52" y="264" fill="#657b83">● pi is writing it. I'll take the verdict with pi_result</text>
+    <text x="70" y="292" fill="#657b83">and check it against the acceptance script.</text>
+  </g>
+
+  <!-- ================================= prompt box ================================= -->
+  <rect x="44" y="324" width="812" height="42" rx="8" fill="#f5eeda" stroke="#ded8c4" stroke-width="1"/>
+  <text x="62" y="351" fill="#93a1a1" font-size="15">&gt;</text>
+  <rect x="80" y="337" width="9" height="18" fill="#93a1a1"/>
+
+  <!-- ================================= status line ================================= -->
+  <!-- Row 0 is whatever status line the user already had; pi-delegate runs it untouched and
+       prints beneath it. Deliberately a plain one — any particular theme would read as a
+       requirement. -->
+  <text x="52" y="398" fill="#93a1a1" font-size="15" xml:space="preserve">~/code/api   main*   Opus 5   38%</text>
+
+  <!-- pi rows. Column geometry mirrors scripts/statusline.sh: "● pi", the elapsed right-aligned
+       in a 9-wide field, two spaces, the model. Sorted oldest first. The one saturated colour in
+       the image is the overdue row, because that is the single thing the row exists to say. -->
+  <g font-size="15">
+    <text x="52"  y="430" fill="#657b83">●</text>
+    <text x="70"  y="430" fill="#93a1a1">pi</text>
+    <text x="169" y="430" fill="#cb4b16" text-anchor="end">18m22s</text>
+    <text x="187" y="430" fill="#586e75">Qwen3.8-27B-Instruct-MLX</text>
+
+    <text x="52"  y="458" fill="#657b83">●</text>
+    <text x="70"  y="458" fill="#93a1a1">pi</text>
+    <text x="169" y="458" fill="#b58900" text-anchor="end">7m04s</text>
+    <text x="187" y="458" fill="#657b83">qwen3-coder-30b</text>
+
+    <text x="52"  y="486" fill="#657b83">●</text>
+    <text x="70"  y="486" fill="#93a1a1">pi</text>
+    <text x="169" y="486" fill="#93a1a1" text-anchor="end">18s</text>
+    <text x="187" y="486" fill="#657b83">gemma-4-26b-a4b-it-4bit</text>
+  </g>
+
+</svg>

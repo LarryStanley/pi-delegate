@@ -5,7 +5,10 @@
 Call a local [`pi`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) agent from inside
 Claude Code: Claude writes the task book and judges the result, pi writes the source and the tests.
 
-![A Claude Code session: Claude reads the source, writes a task book, calls pi_dispatch, and three pi rows appear under the user's own status line with their elapsed times](docs/diagrams/statusline-mockup.svg)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/statusline-mockup.svg">
+  <img alt="A Claude Code session: Claude reads the source, writes a task book, calls pi_dispatch, and three pi rows appear under the user's own status line with their elapsed times" src="docs/diagrams/statusline-mockup-light.svg">
+</picture>
 
 *Claude reads the code and writes the contract; `pi_dispatch` hands the writing to pi. The rows under the status line are this window's dispatches, one per row, and they disappear when the last one finishes.*
 
