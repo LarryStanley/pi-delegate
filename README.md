@@ -1,15 +1,24 @@
 # pi-delegate
 
-Delegate implementation and tests to a local
-[`pi`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) agent, with hooks that
-enforce dispatch discipline.
+A written rule telling the model to delegate its coding work does not hold. Measured on this repo's
+own history: with the rule in place, roughly 80% of the characters that got committed were still
+typed by the main model, each time for a reason that sounded fine at the moment — "the wiring needs
+judgment", "this file is too long for a small model", "the existing tests will break".
 
-Claude acts as tech lead: it produces the probe, the task book, the acceptance script, and the
-verdict. **pi writes the source code.**
+pi-delegate replaces the paragraph with a hook. Claude stays tech lead and writes the probe, the task
+book, the acceptance script and the verdict. A local
+[`pi`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) agent writes the source and the
+tests, on whatever provider and model your `pi` is already pointed at. In `strict` mode a `PreToolUse`
+hook denies Claude's own `Write` and `Edit` on existing product source and tells it to dispatch
+instead.
 
-![Architecture: Claude calls MCP tools, the MCP server holds each pi child's stdio open, pi children call the user's own provider](docs/diagrams/architecture.svg)
+![A Claude Code session: Claude reads the source, writes a task book, calls pi_dispatch, and three pi rows appear under the user's own status line with their elapsed times](docs/diagrams/statusline-mockup.svg)
 
-*Claude never speaks the RPC protocol directly — the MCP server holds the pipe, which is what makes mid-run `pi_steer` and `pi_abort` possible.*
+*Claude reads the code and writes the contract; `pi_dispatch` hands the writing to pi. The rows under the status line are this window's dispatches, one per row, and they disappear when the last one finishes.*
+
+The rail has a hole, and it is deliberate: the hook matches `Write` and `Edit` only, so the same edit
+made through `Bash` (`sed -i`, a heredoc) is never intercepted. It blocks editing a file yourself out
+of habit, not a deliberate workaround.
 
 ## Install
 
@@ -18,13 +27,10 @@ verdict. **pi writes the source code.**
 /plugin install pi-delegate@pi-delegate
 ```
 
-Run both inside Claude Code. The first command registers this repository as a plugin
-marketplace; the second installs the plugin from it. If the install summary says
-`Run /reload-plugins to activate.`, run that too.
-
-Requires Node ≥ 22 and a `pi` installation that is already set up. Dependencies are
-installed automatically from the committed lockfile — there is nothing to `npm install`
-yourself.
+Run both inside Claude Code: the first registers this repository as a plugin marketplace, the second
+installs the plugin from it. If the install summary says `Run /reload-plugins to activate.`, run that
+too. Requires Node ≥ 22 and a `pi` installation that is already set up; dependencies are installed
+automatically from the committed lockfile, so there is nothing to `npm install` yourself.
 
 To update later:
 
@@ -35,50 +41,26 @@ To update later:
 <details>
 <summary>Local development install</summary>
 
-To run a working copy instead of the published version:
-
 ```bash
 claude --plugin-dir /path/to/pi-delegate
 ```
 
-A `--plugin-dir` copy takes precedence over the installed one for that session, so you can
-test changes without uninstalling.
+Runs a working copy instead of the published version. A `--plugin-dir` copy takes precedence over the
+installed one for that session, so you can test changes without uninstalling.
 
 </details>
 
-Then run `/pi-delegate:setup` for a guided first-run walkthrough: it checks `pi` and its
-provider, explains the discipline modes and asks which one you want, offers to fix anything
-fixable, and offers a verification dispatch before you start using the tools for real.
+Then run `/pi-delegate:setup`: it finds `pi` and works out which provider and model a dispatch will
+actually reach, explains the discipline modes and asks which one you want, and fixes what it can. It
+then offers a verification dispatch and the status line indicator, and closes with what to do next.
 
 ## Configuration: nothing is required by default
 
-`pi_dispatch` **specifies no provider or model**, so pi uses your own default
-(`defaultProvider` / `defaultModel` in `~/.pi/agent/settings.json`). In other words:
-whatever model you already point pi at, dispatches go there too — anthropic, openai, litellm,
-ollama, LM Studio, or a local OpenAI-compatible server (e.g. omlx) all work the same way, with
-nothing to configure for this plugin specifically.
-
-If you want to pin a different model long-term (for example, a cheap local model dedicated to
-dispatches while interactive pi uses something else), write
-`~/.claude/pi-delegate/config.json`:
-
-```json
-{
-  "provider": "ollama",
-  "model": "qwen3:8b",
-  "timeout_s": 1500,
-  "thinking": "off",
-  "tools": "read,write,edit",
-  "no_context_files": true,
-  "drafter_patterns": ["-draft", "_assistant", "-assistant"]
-}
-```
-
-Every field is optional. Resolution order is **`pi_dispatch` call arguments → this file → pi's
-own defaults**.
-
-`/pi-delegate:doctor` tells you which model a dispatch will actually reach, and raises a
-problem only under conditions that genuinely hold.
+`pi_dispatch` specifies no provider or model, so dispatches land on whatever you already point pi at
+(`defaultProvider` / `defaultModel` in `~/.pi/agent/settings.json`): anthropic, openai, litellm,
+ollama, LM Studio, or a local OpenAI-compatible server such as omlx, all the same way.
+`/pi-delegate:doctor` tells you which model a dispatch will actually reach, and only raises problems
+that apply.
 
 ### The defaults below were measured, not guessed
 
@@ -88,12 +70,9 @@ problem only under conditions that genuinely hold.
 | `tools` | `read,write,edit` | Granting `bash` made the model roam endlessly with `ls` / `cat` instead of writing anything. |
 | `no_context_files` | `true` | Measured: without it, 43 reads / 0 writes / timed out; with it, finished in 93 seconds. |
 
-To override, specify it directly in the `pi_dispatch` call (`thinking`, `tools`,
-`no_context_files`, `append_system_prompt`, `provider`, `model`, `timeout_s`).
-
-`--mode rpc`, `--session-id`, `--no-skills`, and `--no-extensions` are structural and not
-overridable; `--no-session` is **deliberately never passed** (omitting it is what makes the
-session land on disk, which is what gives `pi_transcript` something to read).
+Pinning a provider and model, the resolution order between call arguments, the config file and pi's
+own defaults, and which flags are structural rather than yours to override:
+[docs/configuration.md](docs/configuration.md).
 
 ## Modes
 
@@ -103,33 +82,22 @@ session land on disk, which is what gives `pi_transcript` something to read).
 | `soft` | Nudges when existing product code is touched (default) |
 | `strict` | Blocks edits to existing product code |
 
-Switch modes with `/pi-delegate:mode <mode>`; state lives in `~/.claude/pi-delegate/modes.json`,
-remembered per project. "Existing product code" means a source file that already exists under
-the project root's `src/`; `tasks/`, `scripts/`, `docs/`, markdown, config files, and brand-new
-files are all allowed through.
-
-`strict` is a discipline guardrail, not enforcement: the hook is only wired to `Write|Edit`, so
-editing the same file with `Bash` (`sed -i`, a heredoc, `python - <<EOF`, …) is never intercepted.
-There's always a way around it — it blocks editing the file yourself out of habit, not a
-deliberate workaround.
-
-To make one hand-edit (a probe), run `/pi-delegate:probe` first for a one-time bypass.
+`strict` blocks `Write` and `Edit`, which is not the same as blocking edits — `sed -i` and a heredoc
+walk straight past it, and `/pi-delegate:probe` clears the way for one deliberate hand-edit. What
+counts as existing product code, where the per-project state lives, and where the holes are:
+[docs/configuration.md](docs/configuration.md).
 
 ## MCP tools
 
 | Tool | Purpose |
 |---|---|
 | `pi_dispatch` | Dispatch a task book. `mode=sync` waits for the result, `mode=async` runs it in the background |
-| `pi_status` | Check progress — **the reliable mechanism**; also reports when no notification watcher is attached |
+| `pi_status` | Check progress; also reports when no notification watcher is attached |
 | `pi_steer` | Interject mid-run when it's heading the wrong way |
-| `pi_abort` | Abort. **Re-dispatch an aborted task unchanged; only rewrite the task book after a real failure** |
+| `pi_abort` | Abort a run in flight |
 | `pi_result` | Collect the verdict of an async dispatch |
 | `pi_transcript` | Drill in only when the verdict isn't enough |
 | `pi_stats` | Check token usage |
-
-`pi_dispatch` also takes `resume_session_id` to continue an earlier dispatch instead of
-starting fresh — pi keeps the previous turns, which is what makes `/pi-delegate:discuss`
-a conversation rather than a question box.
 
 ## Consulting pi instead of delegating to it
 
@@ -141,14 +109,9 @@ pi writes nothing, and the output is its opinion.
 | `/pi-delegate:review [ref\|files]` | A second reviewer on a diff. pi writes structured findings; Claude then **checks each one against the code** and reports them as confirmed / false / undecided |
 | `/pi-delegate:discuss <question>` | Think a problem through over as many turns as it takes, with `resume_session_id` carrying the thread |
 
-Both are slash commands rather than MCP tools, deliberately. An MCP tool's schema is paid
-in every context whether or not it is ever called; a skill costs nothing until you invoke
-it. Review and discussion are things you start on purpose, so they belong on the side of
-that line that is free when idle.
-
-The review command does not fix anything it finds. Reviewing and fixing in one motion is
-how a wrong finding becomes a committed change — confirmed findings become a task book,
-and go back through a normal dispatch.
+Both are slash commands rather than MCP tools on purpose, because a tool's schema is paid in every
+context and a skill costs nothing until you invoke it. That reasoning, and the rest of the plumbing
+decisions, are in [docs/design-notes.md](docs/design-notes.md).
 
 ## Dispatching behind a critic gate
 
@@ -162,17 +125,6 @@ count as done because pi said it was done.
 | Critic | a **second, independent** pi session, new every round | the contract and the diff — never the generator's reasoning |
 | Judge | Claude | the real code |
 
-A REJECT goes back to the generator via `resume_session_id`, for **at most three rounds**. Two
-asymmetries make that loop terminate: the generator resumes each round while the critic is
-always a fresh session (a critic carrying its own last verdict checks that its complaints were
-addressed instead of re-reading the code), and only a finding that names a contract item can
-block (a fresh critic can always produce new opinions, so unbounded scope means it never
-converges). Three rounds without convergence is reported as a contract defect rather than
-retried a fourth time.
-
-The critic's ACCEPT is evidence, not the gate — Claude still walks the contract against the
-real code, because two models agreeing with each other is not verification.
-
 Costs roughly 3-10× a plain dispatch, and against a local endpoint the rounds are serial
 wall-clock. Worth it where a mistake is expensive to find later (auth, money, migrations,
 public interfaces, silent failures); not worth it for internal tooling where the feedback loop
@@ -180,79 +132,40 @@ is "run it and see".
 
 ## How you learn a dispatch finished
 
-Two channels, and only one of them is a guarantee.
+Two channels, and only one of them is a guarantee. **`pi_status` / `pi_result` — reliable.** The MCP
+server talks to pi over RPC (`pi --mode rpc`), so it knows the outcome the moment it happens. **The
+completion notification — a convenience.** MCP gives a server no way to push a message into a
+conversation, so the completion goes over a per-session socket to the plugin's monitor, whose stdout
+Claude Code turns into a notification, and monitors run in interactive CLI sessions only — a headless
+run has no watcher at all.
 
-**`pi_status` / `pi_result` — reliable.** The MCP server talks to pi over RPC
-(`pi --mode rpc`), so it knows the outcome the moment it happens.
-
-**The completion notification — a convenience.** MCP gives a server no way to push a message
-into a conversation, so the completion is broadcast over a per-session socket to the plugin's
-monitor, whose stdout Claude Code turns into a notification. Monitors run in interactive CLI
-sessions only, so a headless run has no watcher at all.
-
-The socket replaced a `tail -F` over a log file
-([issues/1](https://github.com/LarryStanley/pi-delegate/issues/1)): a file gave the writer no
-way to observe whether anyone was reading it, so when the reader died the completions simply
-stopped and nothing said so. A connection is its own liveness signal, so `pi_dispatch` and
-`pi_status` now state outright when no notification is coming, and the monitor reconnects by
-itself when `/reload-plugins` restarts the server. The log file is still written — it is what
-`pi_result` reads back when a reload empties the in-memory registry.
+The notification used to be a `tail -F` over a log file, and when the reader died the completions
+stopped with nothing to say so. What that cost and what replaced it:
+[docs/design-notes.md](docs/design-notes.md).
 
 ## Seeing a dispatch while it runs
 
-`/pi-delegate:statusline` adds a row to the Claude Code status line that exists only while a pi
-dispatch is in flight:
+`/pi-delegate:setup` offers this row at step 5; `/pi-delegate:statusline` adds it later if you
+declined it there or skipped setup. Either way it is a row on the Claude Code status line that exists
+only while a pi dispatch is in flight:
 
 ```
-● pi ⇢ 2 running · 3m12s · Qwen3.8-27B
+● pi   18m22s  Qwen3.8-27B-Instruct-MLX
+● pi    7m04s  qwen3-coder-30b
 ```
 
-The count is **this session's own**, and another Claude Code window's dispatches never appear
-in it. 0.13.0 summed across sessions — every dispatch reaches the same endpoint, so the
-machine-wide number looked like the useful one — and that was wrong within the hour: the other
-window showed `1 running` for a dispatch its own `pi_result` answers `Unknown session_id` to.
-A count you can see and cannot act on, in a window that dispatched nothing, is the shape of
-[issues/1](https://github.com/LarryStanley/pi-delegate/issues/1) all over again. Ownership now
-travels on line 2 of the status file as the writer's raw `CLAUDE_CODE_MESSAGING_SOCKET`, which
-Claude Code also puts in the status-line command's environment, so the reader decides ownership
-with a string comparison — no hashing, no subprocess on a path that runs every tick.
-
-The elapsed time is the oldest of your own still going, and it turns yellow at 5 minutes and red
-at 15, because "this has been running for 18 minutes" should not require reading the line to
-notice.
-
-The leading dot breathes on a 10-second cycle. Its phase comes from the wall clock rather than
-a frame counter, so it looks the same whatever cadence Claude Code happens to rerun the status
-line at, and does not freeze mid-animation when the session goes quiet.
-
-Three constraints shaped how this is installed, none of them ours:
-
-- **Claude Code allows exactly one `statusLine`**, and a plugin's own `settings.json` may only
-  contain `agent` and `subagentStatusLine`. Adding this means writing to the user's global
-  settings, so `/pi-delegate:statusline` **probes the existing command by running it**, shows
-  before and after, backs up `settings.json`, and composes rather than replaces — the existing
-  status line runs untouched and the pi row goes underneath it.
-- **It needs `refreshInterval`, set to `1`.** Event-driven redraws go quiet while the session is
-  idle, which is exactly when an async dispatch is running. `1` rather than something cheaper
-  because the row carries an elapsed seconds counter, and a counter refreshed every 2 seconds
-  skips numbers — 8s, 10s, 12s — which reads as broken rather than as slow. The timer reruns the
-  *whole* status line including the user's own (~10% of one core for a 100ms status line), so
-  the cost is stated up front rather than discovered.
-- **It cannot live in the subagent panel.** `subagentStatusLine` can override or hide the rows
-  Claude Code already renders for its own subagents, but there is no way to add one, and a pi
-  dispatch is not a Claude Code subagent.
-
-`scripts/statusline.sh` is a standalone reference implementation as well as the installed one:
-everything above `render` gathers facts, and `render` alone decides how they look. Edit `render`
-in your own copy (`~/.claude/pi-delegate/statusline.sh`) and nothing can break except the
-appearance.
-
-It is bash rather than Node deliberately. On every tick, a Node process that does nothing but
-read one small file measured 40-60ms of interpreter startup against ~100ms for a full powerline
-render — a 50% latency increase for one line of text. The status file is written as flat
-`key=value` pairs so bash can read it with word splitting and no parser.
+Each row carries its own elapsed time, turning amber at 5 minutes and red at 15 on its own, which is
+the point of splitting them: one 18-minute dispatch should not drag a 20-second one red alongside it.
+Installing the row probes whatever status line you already have by running it, and composes rather
+than replaces. Why the row is bash and not Node, why ownership travels on line 2 of the status file, and
+what 0.13.0 got wrong by counting every window's dispatches:
+[docs/design-notes.md](docs/design-notes.md).
 
 ## How a dispatch works
+
+![Architecture: Claude calls MCP tools, the MCP server holds each pi child's stdio open, pi children call the user's own provider](docs/diagrams/architecture.svg)
+
+*Claude never speaks the RPC protocol directly — the MCP server holds the pipe, which is what makes mid-run `pi_steer` and `pi_abort` possible.*
 
 ![Sequence diagram of one pi_dispatch call followed by a mid-run pi_steer, showing Claude, the MCP server, a pi child, and the provider](docs/diagrams/dispatch-sequence.svg)
 
@@ -260,17 +173,19 @@ render — a 50% latency increase for one line of text. The status file is writt
 
 ## Known gaps
 
-`pi_stats` only returns the `tokens` and `duration_s` already present in the verdict. spec
-§5's `get_session_stats` passthrough (including `cost` / `context` usage) is not yet
-implemented.
+`pi_stats` only returns the `tokens` and `duration_s` already present in the verdict. The
+`get_session_stats` passthrough that would also report `cost` and `context` usage is not yet built.
 
 ## Documentation
 
+Claude loads the skills below by itself when the situation calls for one. They are listed so you can
+read what it will be told; `setup`, `doctor`, `mode` and `probe` are commands that walk you through
+something rather than documents to read.
+
 | File | Contents |
 |---|---|
-| `docs/publish-prep-report.md` | Changes and verification notes from the pre-release pass |
-| `docs/superpowers/specs/2026-08-22-pi-delegate-plugin-design.md` | Design spec (historical) |
-| `docs/superpowers/plans/2026-08-22-pi-delegate-plugin.md` | Implementation plan (historical) |
+| `docs/configuration.md` | The config file, the resolution order, the flags you cannot override, and what the mode hook does and does not cover |
+| `docs/design-notes.md` | Why the completion socket, the per-session status row, the bash status line and the two slash commands are built the way they are |
 | `skills/delegating-to-pi/` | The dispatch discipline itself: the four-way split, task books, acceptance, model choice |
 | `skills/review/` | The second-opinion review flow, and why Claude adjudicates rather than relays |
 | `skills/discuss/` | Multi-turn consultation, and why replies are kept short |
@@ -287,3 +202,7 @@ claude plugin validate .
 `fixtures/fake-pi.mjs` stands in for `pi --mode rpc`. It deliberately lives **outside**
 `test/` — `node --test` treats any file under `**/test/**/*.{cjs,mjs,js}` as a test file, and
 putting it in `test/` would add one permanently-passing phantom test.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

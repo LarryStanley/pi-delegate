@@ -40,9 +40,8 @@ came from (`source` is either `pi-delegate config.json` or `pi settings.json`).
 
 - **This plugin emits no `--provider` / `--model` flags by default.** A dispatch simply
   inherits whatever `pi` itself is already pointed at — anthropic, openai, a local
-  OpenAI-compatible server, anything. **There is no requirement to run a local inference
-  server**; whatever the user already uses with `pi` interactively is what dispatches will
-  use too.
+  OpenAI-compatible server. There is no requirement to run a local inference server;
+  whatever the user already uses with `pi` interactively is what dispatches will use too.
 - If `effective.provider` and `effective.model` are both empty, pi has no
   `defaultProvider` / `defaultModel` set in `~/.pi/agent/settings.json`, and pi-delegate has
   no `~/.claude/pi-delegate/config.json` pinning one either. In that case dispatches will
@@ -63,10 +62,10 @@ anything:
 - **`soft`** (the default) — you get a reminder when you edit existing product source by
   hand, but nothing is blocked.
 - **`strict`** — a `PreToolUse` hook actually **denies** those edits and tells you to
-  delegate instead. Worth explaining *why* this exists: prose rules alone didn't hold up —
-  even with a written rule in place telling the model to delegate, roughly 80% of the
-  characters that got committed were still typed by the main model by hand. `strict` is what
-  made that stop. Be honest about its limit too: the hook only matches the `Write` and `Edit`
+  delegate instead. Worth explaining *why* this exists: with a written rule in place
+  telling the model to delegate, roughly 80% of the characters that got committed were
+  still typed by the main model by hand. `strict` is what made that stop.
+  Be honest about its limit too: the hook only matches the `Write` and `Edit`
   tools, so the same edit made through `Bash` (`sed -i`, a heredoc, `python - <<EOF`, …)
   is never intercepted — it's a discipline rail against your own habit, not a security
   boundary.
@@ -166,11 +165,10 @@ Point back at step 3's fix rather than guessing at a new cause.
 **Ask first.** This one writes to `~/.claude/settings.json`, which is the user's own global
 config and probably already has a status line in it.
 
-Explain what it is: a row that appears at the bottom of the screen while a pi dispatch is
-running — how many are in flight across every Claude Code session on this machine, how long
-the oldest has been going, and which model — and disappears entirely when nothing is running.
-The machine-wide count is the useful part when every dispatch shares one endpoint: it is how
-you notice another session is already holding it.
+Explain what it is: one row per running pi dispatch at the bottom of the screen, each showing
+how long that dispatch has been going and which model it is on. It disappears entirely when
+nothing is running. The rows are this session's own; another Claude Code window's dispatches
+never appear in them.
 
 Two things to say before they answer, because neither is visible from a screenshot:
 
@@ -183,8 +181,8 @@ Two things to say before they answer, because neither is visible from a screensh
 
 If they want it, invoke `/pi-delegate:statusline` and follow it — it probes their existing
 command by actually running it, shows before and after, and backs up `settings.json` before
-writing. Do not shortcut it from here; the whole point of that skill is that nothing is
-assumed about a setup you have not looked at.
+writing. Do not shortcut it from here — that skill assumes nothing about a setup it has
+not looked at.
 
 If they decline, say it can be added any time with `/pi-delegate:statusline`, and move on.
 

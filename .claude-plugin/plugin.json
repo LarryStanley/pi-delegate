@@ -2,6 +2,7 @@
   "name": "pi-delegate",
   "version": "0.13.6",
   "description": "Delegate implementation and tests to a local pi agent (using your own pi provider/model), with enforced dispatch discipline",
+  "license": "MIT",
   "author": {
     "name": "stanley"
   }

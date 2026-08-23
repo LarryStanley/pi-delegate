@@ -6,20 +6,20 @@ description: Use when delegating coding work to the local pi agent to cut cost, 
 
 **You are the tech lead, not the typist. All source code is written by pi — implementation and tests alike.**
 
-You produce only four things: **the probe**, **the task book**, **the acceptance script**, and **the verdict**. Every other character gets dispatched.
+You produce only four things: the probe, the task book, the acceptance script, and the verdict. Every other character gets dispatched.
 
-The test is not "does this need judgment" — it's structural: **"is this a character that gets committed" — if yes, dispatch it**.
+The test is structural, not a judgment call: **is this a character that gets committed? Then dispatch it.**
 
 ## The four-way split (the one decision that must be right)
 
 | What this really is | Who does it | The test |
 |---|---|---|
-| **Writing any source code**: implementation, tests, patches | **pi** | "Is this a character that gets committed?" |
-| **A lookup, decidable without reading context** | **a script** | "Does this transformation require understanding context?" |
-| **Comparing two lists item by item** | **pi** | Extract and normalize with a script, hand the comparison to pi |
-| **Deciding the contract, judging success/failure** | **you** | probe, task book, acceptance script, verdict |
+| **Writing any source code**: implementation, tests, patches | pi | "Is this a character that gets committed?" |
+| **A lookup, decidable without reading context** | a script | "Does this transformation require understanding context?" |
+| **Comparing two lists item by item** | pi | Extract and normalize with a script, hand the comparison to pi |
+| **Deciding the contract, judging success/failure** | you | probe, task book, acceptance script, verdict |
 
-⚠ **The "a lookup, decidable" branch is the most expensive misjudgment**, and no hook can catch it.
+**The "a lookup, decidable" branch is the most expensive misjudgment**, and no hook can catch it.
 Measured: moving 33 files' declarations took a 46-minute dispatch + 5 timeouts + drove the endpoint down to 14.6 tok/s (normally 50),
 while a deterministic script finished in seconds at zero load. **It needs no context understanding, so it should never pass through a model at all.**
 
@@ -31,8 +31,8 @@ That is a rule about *one file's size*, not about how much work a dispatch may c
 
 ## Size the task like a subagent's, not like a slice
 
-**Give pi a whole coherent unit of work — the same thing you would hand a subagent.** Multiple files,
-implementation and tests together, the whole feature. Do not pre-slice it into pieces small enough to feel safe.
+**Give pi a whole coherent unit of work.** Multiple files, implementation and tests together, the whole feature.
+Do not pre-slice it into pieces small enough to feel safe.
 
 This is measured, and the result went the opposite way to the intuition it replaced. The same job — a two-module
 matcher plus tests, against a fixed written contract — dispatched two ways:
@@ -154,7 +154,7 @@ convenience that only exists when a watcher is attached, and an async dispatch's
 says outright whether one is. When none is (every headless run, and any session whose
 monitor has died), nothing will arrive on its own.
 
-That distinction is the whole hazard: a notification that never comes looks exactly like a
-task still working — the same "symptoms don't point to causes" shape this skill warns about
-for pi itself. Polling costs almost nothing; believing a notification that is not coming
-costs the entire wait. The verdict is never lost either way, only the nudge.
+A notification that never comes looks exactly like a task still working — the same
+"symptoms don't point to causes" shape this skill warns about for pi itself. Polling costs
+almost nothing; believing a notification that is not coming costs the entire wait. The
+verdict is never lost either way, only the nudge.

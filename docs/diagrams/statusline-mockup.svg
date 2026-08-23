@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 1160 600" width="1160" height="600" xmlns="http://www.w3.org/2000/svg"
+     font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
+
+  <!-- Terminal skin. No external font import: GitHub renders an SVG as an image, which blocks
+       external resources, so every glyph position below is an explicit coordinate rather than a
+       run of text whose width depends on whichever font happens to load. -->
+
+  <rect width="1160" height="600" fill="#0a0a0a"/>
+
+  <!-- ============================== window chrome ============================== -->
+  <rect x="40" y="30" width="1080" height="540" rx="12" fill="#141414" stroke="#2a2a2a" stroke-width="1"/>
+  <path d="M 40 42 a 12 12 0 0 1 12 -12 h 1056 a 12 12 0 0 1 12 12 v 24 h -1080 z" fill="#1c1c1c"/>
+  <line x1="40" y1="66" x2="1120" y2="66" stroke="#2a2a2a" stroke-width="1"/>
+  <circle cx="64" cy="48" r="5" fill="#eb6c36"/>
+  <circle cx="84" cy="48" r="5" fill="#3a3a3a"/>
+  <circle cx="104" cy="48" r="5" fill="#3a3a3a"/>
+  <text x="580" y="52" fill="#6a6a6a" font-size="11.5" text-anchor="middle">claude — ~/code/api</text>
+
+  <!-- ================================ transcript ================================ -->
+  <text x="68" y="110" fill="#e8e8e8" font-size="13.5">&gt; refactor the token-refresh path in the auth middleware, with tests</text>
+
+  <text x="68" y="150" fill="#8a8a8a" font-size="13.5">● Read src/auth/middleware.js, src/auth/refresh.js, test/auth.test.js</text>
+  <text x="68" y="176" fill="#8a8a8a" font-size="13.5">● Wrote tasks/auth-refresh.md — the contract, not the code</text>
+
+  <text x="68" y="216" fill="#e8e8e8" font-size="13.5">● pi_dispatch(task_file: "tasks/auth-refresh.md", mode: "async")</text>
+  <text x="86" y="242" fill="#6a6a6a" font-size="13.5">└ dispatched · session 7f3a2c · no notification watcher attached</text>
+
+  <text x="68" y="282" fill="#8a8a8a" font-size="13.5">● pi is writing it. I'll take the verdict with pi_result and check it</text>
+  <text x="86" y="308" fill="#8a8a8a" font-size="13.5">against the acceptance script before calling it done.</text>
+
+  <!-- ================================ prompt box ================================ -->
+  <rect x="60" y="342" width="1040" height="44" rx="8" fill="#111111" stroke="#2a2a2a" stroke-width="1"/>
+  <text x="78" y="370" fill="#4a4a4a" font-size="13.5">&gt;</text>
+  <rect x="96" y="356" width="8" height="17" fill="#4a4a4a"/>
+
+  <!-- ================================ status line ================================ -->
+  <!-- Row 0 is whatever the user already had. pi-delegate runs it untouched and prints
+       underneath; this mockup deliberately uses a plain one rather than any particular theme. -->
+  <text x="68" y="420" fill="#6a6a6a" font-size="13.5" xml:space="preserve">~/code/api   main*   Opus 5   38%</text>
+
+  <!-- pi rows. Column geometry mirrors scripts/statusline.sh: "● pi", the elapsed right-aligned
+       in a 9-wide field, two spaces, the model. Sorted oldest first. -->
+  <g font-size="13.5">
+    <text x="68" y="452" fill="#8a8a8a">●</text>
+    <text x="86" y="452" fill="#6a6a6a">pi</text>
+    <text x="174" y="452" fill="#d15b4a" text-anchor="end">18m22s</text>
+    <text x="190" y="452" fill="#8a8a8a">Qwen3.8-27B-Instruct-MLX</text>
+
+    <text x="68" y="478" fill="#8a8a8a">●</text>
+    <text x="86" y="478" fill="#6a6a6a">pi</text>
+    <text x="174" y="478" fill="#d7a03c" text-anchor="end">7m04s</text>
+    <text x="190" y="478" fill="#8a8a8a">qwen3-coder-30b</text>
+
+    <text x="68" y="504" fill="#8a8a8a">●</text>
+    <text x="86" y="504" fill="#6a6a6a">pi</text>
+    <text x="174" y="504" fill="#6a6a6a" text-anchor="end">18s</text>
+    <text x="190" y="504" fill="#8a8a8a">gemma-4-26b-a4b-it-4bit</text>
+  </g>
+
+  <text x="68" y="540" fill="#5a5a5a" font-size="11.5">Rows exist only while a dispatch is in flight, and only for dispatches this window started. Capped at four, then “… +N more”. The</text>
+  <text x="68" y="556" fill="#5a5a5a" font-size="11.5">leading dot breathes on a 10-second cycle, phased off the wall clock rather than a frame counter, so it never freezes mid-animation.</text>
+
+  <!-- ================================ annotations ================================ -->
+  <!-- Leaders are dashed and land on a dot, so an annotation can never be mistaken for chrome.
+       Each anchor sits at the end of the text it points at, not in empty space beside it. -->
+
+  <path d="M 596 212 Q 760 208 840 186" fill="none" stroke="rgba(255,255,255,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+  <circle cx="596" cy="212" r="2" fill="rgba(255,255,255,0.34)"/>
+  <text x="852" y="176" fill="#7a7a7a" font-size="11.5">Claude writes the task book</text>
+  <text x="852" y="192" fill="#7a7a7a" font-size="11.5">and the verdict. pi writes the code.</text>
+
+  <path d="M 348 416 Q 430 412 470 404" fill="none" stroke="rgba(255,255,255,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+  <circle cx="348" cy="416" r="2" fill="rgba(255,255,255,0.34)"/>
+  <text x="482" y="408" fill="#7a7a7a" font-size="11.5">your own status line, run untouched</text>
+
+  <path d="M 396 448 Q 540 442 620 448" fill="none" stroke="rgba(255,255,255,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+  <circle cx="396" cy="448" r="2" fill="rgba(255,255,255,0.34)"/>
+  <text x="632" y="442" fill="#7a7a7a" font-size="11.5">one row per dispatch, oldest first. Elapsed turns</text>
+  <text x="632" y="458" fill="#7a7a7a" font-size="11.5">amber at 5 minutes and red at 15, so an 18-minute</text>
+  <text x="632" y="474" fill="#7a7a7a" font-size="11.5">dispatch does not need reading to notice.</text>
+
+</svg>
