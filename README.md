@@ -1,24 +1,22 @@
 # pi-delegate
 
-A written rule telling the model to delegate its coding work does not hold. Measured on this repo's
-own history: with the rule in place, roughly 80% of the characters that got committed were still
-typed by the main model, each time for a reason that sounded fine at the moment — "the wiring needs
-judgment", "this file is too long for a small model", "the existing tests will break".
-
-pi-delegate replaces the paragraph with a hook. Claude stays tech lead and writes the probe, the task
-book, the acceptance script and the verdict. A local
-[`pi`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) agent writes the source and the
-tests, on whatever provider and model your `pi` is already pointed at. In `strict` mode a `PreToolUse`
-hook denies Claude's own `Write` and `Edit` on existing product source and tells it to dispatch
-instead.
+A written rule telling Claude to delegate its coding work does not hold: on this repo's own history,
+roughly 80% of the characters that got committed were still typed by the main model. pi-delegate
+replaces the paragraph with a hook — Claude stays tech lead and writes the task book and the verdict,
+and a local [`pi`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) agent writes the
+source and the tests.
 
 ![A Claude Code session: Claude reads the source, writes a task book, calls pi_dispatch, and three pi rows appear under the user's own status line with their elapsed times](docs/diagrams/statusline-mockup.svg)
 
 *Claude reads the code and writes the contract; `pi_dispatch` hands the writing to pi. The rows under the status line are this window's dispatches, one per row, and they disappear when the last one finishes.*
 
-The rail has a hole, and it is deliberate: the hook matches `Write` and `Edit` only, so the same edit
-made through `Bash` (`sed -i`, a heredoc) is never intercepted. It blocks editing a file yourself out
-of habit, not a deliberate workaround.
+Dispatches go to whatever provider and model your `pi` is already pointed at; this plugin pins
+nothing. In `strict` mode a `PreToolUse` hook denies Claude's own `Write` and `Edit` on existing
+product source and tells it to dispatch instead.
+
+That rail has a hole, and it is deliberate: the hook matches `Write` and `Edit` only, so the same
+edit made through `Bash` (`sed -i`, a heredoc) is never intercepted. It blocks editing a file
+yourself out of habit, not a deliberate workaround.
 
 ## Install
 
