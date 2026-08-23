@@ -11,6 +11,8 @@ import { formatVerdict, assistantText, writtenPaths, progressSummary, collapseRe
 import { loadConfig, loadPiDefaults, isDrafterModel } from "./config.mjs";
 import { formatToolCalls, formatLastN, capped } from "./transcript.mjs";
 import { findCompletion, formatRecovered, unknownSessionMessage } from "./recover.mjs";
+import { createNotifier } from "./notifier.mjs";
+import { eventsSocketPath } from "./events-log.mjs";
 import { eventsLogPath as sessionEventsLogPath } from "./events-log.mjs";
 
 // Re-exported so existing callers keep one import site; the reasoning for the per-session
@@ -200,6 +202,7 @@ export function createToolHandlers({
   gitDiffStatFn = realGitDiffStat,
   config = loadConfig(),
   piDefaults = loadPiDefaults(),
+  notifier = null,
 } = {}) {
   // Every line here reaches the session as a notification, so it is written to be read by
   // a person rather than parsed. It names the project as well as the session_id: if this
@@ -214,13 +217,16 @@ export function createToolHandlers({
   // `failed`, carrying an mkdir error nothing to do with pi — and then call this same
   // failing function again, throwing a second time with nothing left to catch it.
   function appendEventsLog(verdict, cwd) {
+    const files = verdict.write_count === 1 ? "1 file written" : `${verdict.write_count} files written`;
+    const line =
+      `pi dispatch ${verdict.session_id} ${verdict.status} in ${cwd} — ${files}. ` +
+      `Collect it with pi_result session_id=${verdict.session_id}.`;
+    // Live channel first and unconditionally: a watcher attached right now should hear
+    // about this even if the durable write below fails.
+    notifier?.broadcast(line);
     try {
       mkdirSync(dirname(logPath), { recursive: true });
-      const files = verdict.write_count === 1 ? "1 file written" : `${verdict.write_count} files written`;
-      appendFileSync(
-        logPath,
-        `pi dispatch ${verdict.session_id} ${verdict.status} in ${cwd} — ${files}. Collect it with pi_result session_id=${verdict.session_id}.\n`,
-      );
+      appendFileSync(logPath, `${line}\n`);
       return null;
     } catch (error) {
       return `the completion notification could not be written to ${logPath} (${error.message}), so no notification will arrive for this dispatch. Collect it with pi_result instead.`;
@@ -384,12 +390,18 @@ export function createToolHandlers({
         });
 
       if (mode === "async") {
+        const watching = notifier?.watcherCount() ?? 0;
         return text(
           `Dispatched (async). session_id: ${sessionId}\n` +
-          "Get on with your own work — a completion notification will arrive naming this session_id, and " +
-          `pi_result session_id=${sessionId} collects the verdict. pi_status is cheap to poll meanwhile and ` +
-          "warns if pi starts rewriting the same file. If no notification ever arrives (monitors run in " +
-          "interactive CLI sessions only), poll pi_status.",
+          "Get on with your own work. **pi_status is the reliable way to know where this stands** — it is " +
+          "cheap, safe to poll, and warns if pi starts rewriting the same file. " +
+          `pi_result session_id=${sessionId} collects the verdict.\n` +
+          (watching > 0
+            ? "A completion notification should also arrive on its own (a watcher is attached), but treat that " +
+              "as a convenience rather than the mechanism — poll if you have been waiting a while."
+            : "No completion watcher is attached to this session right now, so NO notification will arrive — " +
+              "poll pi_status. (Monitors run in interactive CLI sessions only; this is the normal state in a " +
+              "headless run.)"),
         );
       }
       return text(formatVerdict(await settled));
@@ -407,6 +419,9 @@ export function createToolHandlers({
             // The issue's core complaint: a lost notification looks exactly like "still
             // running". When we KNOW it was lost, say so where the caller already looks.
             ...(entry.notifyFailed ? { notify_failed: entry.notifyFailed } : {}),
+            // issues/1: a notification that will never arrive used to be indistinguishable
+            // from a dispatch still working. Connection state answers that directly.
+            ...(notifier && notifier.watcherCount() === 0 ? { notification_watcher: "none attached — poll, nothing will arrive on its own" } : {}),
             ...(verbose ? { files_touched: collapseRepeats(entry.verdict.files_written) } : { writes: entry.verdict.write_count }),
           }, null, 2));
         }
@@ -489,18 +504,36 @@ export function createToolHandlers({
 }
 
 export async function main() {
-  const handlers = createToolHandlers();
+  // The live notification channel. Failing to listen is survivable — pi_status still
+  // answers and pi_result still works, and the reply to an async dispatch now says
+  // outright that nothing will arrive on its own — so it must never stop the server from
+  // starting. That is the whole lesson of issues/1: the notification is a convenience, and
+  // a convenience may not be allowed to take down the mechanism.
+  const notifier = createNotifier({ socketPath: eventsSocketPath() });
+  try {
+    mkdirSync(dirname(eventsSocketPath()), { recursive: true });
+    await notifier.listen();
+  } catch (error) {
+    process.stderr.write(`pi-delegate: completion notifications are unavailable (${error.message}); pi_status still works.\n`);
+  }
+  const handlers = createToolHandlers({ notifier });
   const version = JSON.parse(readFileSync(new URL("../.claude-plugin/plugin.json", import.meta.url), "utf8")).version;
 
-  await serve({
-    serverInfo: { name: "pi-delegate", version },
-    tools: TOOL_DEFINITIONS,
-    callTool: async (name, args) => {
-      const handler = handlers[name];
-      if (!handler) return text(`Unknown tool: ${name}`, true);
-      return handler(args);
-    },
-  });
+  try {
+    await serve({
+      serverInfo: { name: "pi-delegate", version },
+      tools: TOOL_DEFINITIONS,
+      callTool: async (name, args) => {
+        const handler = handlers[name];
+        if (!handler) return text(`Unknown tool: ${name}`, true);
+        return handler(args);
+      },
+    });
+  } finally {
+    // Release the socket on the way out so the next server (a /reload-plugins restart is
+    // the common case) finds the address free rather than having to reclaim it.
+    await notifier.close().catch(() => {});
+  }
 }
 
 // `file://` + argv[1] only happens to work on POSIX, where the path already starts with

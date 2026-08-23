@@ -148,5 +148,13 @@ Async dispatches completed and wrote their line correctly; nothing was watching 
 wrote it. `tail -F` on a path nobody writes to reports nothing at all, so the only symptom
 was a notification that never came.
 
-If a completion notification never arrives, `pi_status` and `pi_result` still work — the
-verdict is not lost, only the nudge.
+**Poll; do not wait on the notification.** `pi_status` is the mechanism — the MCP server
+talks to pi over RPC and knows the outcome the moment it happens. The notification is a
+convenience that only exists when a watcher is attached, and an async dispatch's reply now
+says outright whether one is. When none is (every headless run, and any session whose
+monitor has died), nothing will arrive on its own.
+
+That distinction is the whole hazard: a notification that never comes looks exactly like a
+task still working — the same "symptoms don't point to causes" shape this skill warns about
+for pi itself. Polling costs almost nothing; believing a notification that is not coming
+costs the entire wait. The verdict is never lost either way, only the nudge.

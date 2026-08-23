@@ -120,7 +120,7 @@ To make one hand-edit (a probe), run `/pi-delegate:probe` first for a one-time b
 | Tool | Purpose |
 |---|---|
 | `pi_dispatch` | Dispatch a task book. `mode=sync` waits for the result, `mode=async` runs it in the background |
-| `pi_status` | Check progress |
+| `pi_status` | Check progress — **the reliable mechanism**; also reports when no notification watcher is attached |
 | `pi_steer` | Interject mid-run when it's heading the wrong way |
 | `pi_abort` | Abort. **Re-dispatch an aborted task unchanged; only rewrite the task book after a real failure** |
 | `pi_result` | Collect the verdict of an async dispatch |
@@ -149,6 +149,26 @@ that line that is free when idle.
 The review command does not fix anything it finds. Reviewing and fixing in one motion is
 how a wrong finding becomes a committed change — confirmed findings become a task book,
 and go back through a normal dispatch.
+
+## How you learn a dispatch finished
+
+Two channels, and only one of them is a guarantee.
+
+**`pi_status` / `pi_result` — reliable.** The MCP server talks to pi over RPC
+(`pi --mode rpc`), so it knows the outcome the moment it happens.
+
+**The completion notification — a convenience.** MCP gives a server no way to push a message
+into a conversation, so the completion is broadcast over a per-session socket to the plugin's
+monitor, whose stdout Claude Code turns into a notification. Monitors run in interactive CLI
+sessions only, so a headless run has no watcher at all.
+
+The socket replaced a `tail -F` over a log file
+([issues/1](https://github.com/LarryStanley/pi-delegate/issues/1)): a file gave the writer no
+way to observe whether anyone was reading it, so when the reader died the completions simply
+stopped and nothing said so. A connection is its own liveness signal, so `pi_dispatch` and
+`pi_status` now state outright when no notification is coming, and the monitor reconnects by
+itself when `/reload-plugins` restarts the server. The log file is still written — it is what
+`pi_result` reads back when a reload empties the in-memory registry.
 
 ## How a dispatch works
 

@@ -1,7 +1,7 @@
 [
   {
-    "name": "pi-dispatch-watch",
+    "name": "pi-dispatch-notifier",
     "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/pi-watch\"",
-    "description": "Notification when an async pi dispatch completes"
+    "description": "Notification when an async pi dispatch completes (socket-attached; reconnects across /reload-plugins)"
   }
 ]

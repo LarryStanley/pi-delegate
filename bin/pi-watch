@@ -1,65 +1,92 @@
 #!/usr/bin/env node
-// The plugin's monitor: watches this session's async-dispatch completions and prints each
-// one, which Claude Code delivers to the session as a notification.
+// The plugin's monitor: prints each async-dispatch completion for this session, which
+// Claude Code delivers to the session as a notification.
 //
-// A wrapper script rather than a bare `tail` in monitors.json, for two reasons:
+// This used to be `tail -F` over a log file, and github.com/LarryStanley/pi-delegate/issues/1
+// is what that cost. The reported failure had the write side working perfectly and the read
+// side simply gone — twelve monitors alive on the machine, not one of them watching the
+// session's file — and nothing anywhere said so. A file gives the writer no way to observe
+// whether anyone is reading it.
 //
-//   1. monitors.json interpolates only ${CLAUDE_PLUGIN_ROOT}, ${CLAUDE_PLUGIN_DATA} and
-//      ${CLAUDE_PROJECT_DIR}. There is no session-id variable, so the per-session path can
-//      only be worked out at run time, from the environment this process is handed.
-//   2. `tail -F` on a path that does not exist retries forever without a word. That exact
-//      silence already hid one bug here for a long time (a mangled ${HOME} on Windows), so
-//      the file is created before tailing and anything unusual is announced rather than
-//      swallowed.
-import { spawn } from "node:child_process";
-import { closeSync, mkdirSync, openSync, readdirSync, rmSync, statSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { eventsLogPath, isSessionScoped, sharedEventsLogPath } from "../src/events-log.mjs";
+// It is now a socket client. Three things follow, and all three were unreachable before:
+//
+//   1. The MCP server can see whether a watcher is attached, so pi_status and the dispatch
+//      reply can say "nothing will arrive on its own" instead of leaving that
+//      indistinguishable from "still running".
+//   2. RECONNECTION. /reload-plugins restarts the MCP server; monitors are not restarted
+//      when their name is unchanged, so this process outlives the server it was talking to.
+//      Retrying forever means the new server is picked up on its own.
+//   3. No dependency on a `tail` binary, which on Windows came from git-bash and was never
+//      guaranteed to be on the monitor's PATH.
+import { connect } from "node:net";
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+import { eventsSocketPath, isSessionScoped, sharedEventsLogPath } from "../src/events-log.mjs";
 
-const PRUNE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
+const RETRY_MS = 2000;
+// PI_DELEGATE_SOCKET is an override for tests and for anyone whose home directory
+// resolves differently in the monitor than in the MCP server; normally the address is
+// derived, so both sides agree without being told.
+const socketPath = process.env.PI_DELEGATE_SOCKET || eventsSocketPath();
 
-const logPath = eventsLogPath();
-mkdirSync(dirname(logPath), { recursive: true });
-// Touch without truncating: another dispatch in this session may already have written to
-// it, and `tail -n 0` starts from the end anyway.
-closeSync(openSync(logPath, "a"));
+try {
+  if (!socketPath.startsWith("\\\\.\\pipe\\")) mkdirSync(dirname(socketPath), { recursive: true });
+} catch { /* the connect below will report anything that actually matters */ }
 
 if (!isSessionScoped()) {
-  // Said out loud, not swallowed. Without a session id every open session tails one shared
-  // file, so completions cross between them — and a session cannot resolve another's
+  // Said out loud rather than swallowed. Without a session id every open session shares one
+  // address, so completions cross between them — and a session cannot resolve another's
   // session_id, so the notification it receives is one it can do nothing with.
   console.log(
-    "pi-delegate: CLAUDE_CODE_SESSION_ID is not set for this monitor, so it is watching the " +
-    `shared log (${sharedEventsLogPath()}). Async dispatch notifications may appear in other ` +
-    "open sessions as well; a session_id from another session will not resolve in this one.",
+    "pi-delegate: CLAUDE_CODE_SESSION_ID is not set for this monitor, so it is sharing one " +
+    `notification channel with every other session (${sharedEventsLogPath()} is the matching log). ` +
+    "Completions may appear in other sessions as well.",
   );
 }
 
-// Old sessions leave their log behind. Small files, but unbounded, and a directory of
-// thousands of them is its own small mess.
-try {
-  const dir = dirname(logPath);
-  for (const name of readdirSync(dir)) {
-    const file = join(dir, name);
-    if (file === logPath || !name.endsWith(".log")) continue;
-    if (Date.now() - statSync(file).mtimeMs > PRUNE_AFTER_MS) rmSync(file, { force: true });
-  }
-} catch {
-  // Pruning is housekeeping; never let it stop the watch from starting.
+let announcedDown = false;
+
+// Retry forever, quietly. The server legitimately is not there at times: before it has
+// started, and across every /reload-plugins. A monitor that exited on the first refusal
+// would be exactly the silent death this rewrite exists to remove.
+function attach() {
+  const socket = connect(socketPath);
+
+  socket.on("connect", () => {
+    if (announcedDown) {
+      console.log("pi-delegate: reconnected to the dispatch notifier.");
+      announcedDown = false;
+    }
+  });
+
+  let buffer = "";
+  socket.on("data", (chunk) => {
+    buffer += chunk.toString();
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) if (line.trim()) console.log(line);
+  });
+
+  // A failed attempt emits BOTH 'error' and 'close', so an unguarded handler schedules two
+  // reconnects and the connection count doubles on every retry. Measured: watcherCount 2
+  // where it should have been 1.
+  let settled = false;
+  const retry = () => {
+    if (settled) return;
+    settled = true;
+    socket.destroy();
+    // NOT unref'd, deliberately. This process has nothing else holding the event loop
+    // open, so an unref'd retry timer lets node exit the moment the first connect fails —
+    // i.e. the monitor dies silently, which is precisely the failure this rewrite exists
+    // to remove. Caught only by an end-to-end run; every unit test still passed.
+    setTimeout(attach, RETRY_MS);
+  };
+  socket.on("error", retry);
+  socket.on("close", retry);
 }
 
-// Args array, no shell: nothing here goes through a second round of parsing, so a home
-// directory containing a space, a backslash, or a shell metacharacter is just a path.
-const child = spawn("tail", ["-n", "0", "-F", logPath], { stdio: ["ignore", "inherit", "inherit"] });
-
-child.on("error", (error) => {
-  console.log(`pi-delegate: could not start the completion watch (${error.message}). Async dispatches will still run; you will just not be notified when they finish.`);
-  process.exit(1);
-});
-child.on("exit", (code) => process.exit(code ?? 0));
+attach();
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
-  process.on(signal, () => {
-    child.kill(signal);
-  });
+  process.on(signal, () => process.exit(0));
 }

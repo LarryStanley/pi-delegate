@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { socketPathFor } from "./notifier.mjs";
 
 // Where an async dispatch's completion line is written, and where the monitor reads it.
 //
@@ -39,4 +40,15 @@ export function eventsLogPath(env = process.env) {
 
 export function isSessionScoped(env = process.env) {
   return sessionIdFrom(env) !== null;
+}
+
+// Where the live notification channel lives, alongside the durable log. The two are
+// deliberately both used: the socket carries the completion to a watcher that is attached
+// right now, the log is what pi_result reads back when a reload emptied the registry.
+//
+// Same session scoping and the same reasoning as eventsLogPath — bin/pi-watch has to
+// derive the identical address without importing the MCP surface.
+export function eventsSocketPath(env = process.env, platform = process.platform) {
+  const id = sessionIdFrom(env) ?? "shared";
+  return socketPathFor(id, platform, join(DIR(), "events"));
 }
