@@ -10,6 +10,7 @@ import { serve } from "./stdio-server.mjs";
 import { formatVerdict, assistantText, writtenPaths, progressSummary, collapseRepeats } from "./verdict.mjs";
 import { loadConfig, loadPiDefaults, isDrafterModel } from "./config.mjs";
 import { formatToolCalls, formatLastN, capped } from "./transcript.mjs";
+import { findCompletion, formatRecovered, unknownSessionMessage } from "./recover.mjs";
 import { eventsLogPath as sessionEventsLogPath } from "./events-log.mjs";
 
 // Re-exported so existing callers keep one import site; the reasoning for the per-session
@@ -240,7 +241,22 @@ export function createToolHandlers({
     );
   }
 
+  // A dispatch this process never saw may still have finished: /reload-plugins empties the
+  // in-memory registry while pi carries on (issues/1). The completion line is on disk, so
+  // answer from there rather than telling the caller its session_id does not exist.
+  function recoverOrExplain(sessionId) {
+    const record = findCompletion(sessionId, logPath);
+    if (record) return text(formatRecovered(record, logPath));
+    return text(unknownSessionMessage(sessionId, registry.ids(), logPath), true);
+  }
+
   function withSession(sessionId, fn) {
+    // Steering, aborting and reading a transcript all need the live control handle, which
+    // died with the old process — there is nothing to recover for those, only a better
+    // explanation than "Currently valid: (none)".
+    if (!registry.has(sessionId)) {
+      return text(unknownSessionMessage(sessionId, registry.ids(), logPath), true);
+    }
     try {
       return fn(registry.get(sessionId));
     } catch (error) {
@@ -381,6 +397,7 @@ export function createToolHandlers({
 
     // Fields aligned with spec §5: {status, elapsed_s, current_tool, files_touched}.
     async pi_status({ session_id, verbose = false }) {
+      if (!registry.has(session_id)) return recoverOrExplain(session_id);
       return withSession(session_id, (entry) => {
         if (entry.verdict) {
           return text(JSON.stringify({
@@ -432,12 +449,8 @@ export function createToolHandlers({
       // throws. An earlier version rewrote it here too ("valid:" vs the registry's
       // "currently valid:"), and the two strings had already drifted apart once —
       // a duplicated implementation like that will drift again sooner or later.
-      let entry;
-      try {
-        entry = registry.get(session_id);
-      } catch (error) {
-        return text(String(error.message ?? error), true);
-      }
+      if (!registry.has(session_id)) return recoverOrExplain(session_id);
+      const entry = registry.get(session_id);
       if (entry.verdict) return text(formatVerdict(entry.verdict));
       try {
         return text(formatVerdict(await entry.done));

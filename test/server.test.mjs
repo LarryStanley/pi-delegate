@@ -555,7 +555,12 @@ test("pi_transcript filter=text also accepts string-shaped content (no longer go
 
 // --- [I7] there is exactly one error message for an unknown session_id ---
 
-test("pi_result and pi_status give the same single sentence for an unknown session_id", async () => {
+// Renamed from "...the same single sentence...": the reply is deliberately no longer a
+// single sentence. issues/1 reported that "Currently valid: (none)" reads like a bug in the
+// caller, when the real situation is usually that /reload-plugins emptied an in-memory
+// registry while pi carried on working. What this test is actually for — that both tools
+// answer identically — is unchanged and still asserted.
+test("pi_result and pi_status answer an unknown session_id identically, and explain the restart case", async () => {
   const task = tmpFile("TASK.md");
   writeFileSync(task, "Modify a.ts");
   const { handlers } = setup(fakeDispatch());
@@ -564,7 +569,8 @@ test("pi_result and pi_status give the same single sentence for an unknown sessi
   const fromStatus = await handlers.pi_status({ session_id: "ghost" });
   assert.equal(fromResult.isError, true);
   assert.equal(fromResult.content[0].text, fromStatus.content[0].text);
-  assert.match(fromResult.content[0].text, /Currently valid:/);
+  assert.match(fromResult.content[0].text, /Sessions known to this server:/);
+  assert.match(fromResult.content[0].text, /reload-plugins/);
 });
 
 // --- registry.add must happen before spawn, or a colliding id leaves an orphaned pi process ---
