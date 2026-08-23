@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg viewBox="0 0 900 580" width="900" height="580" xmlns="http://www.w3.org/2000/svg"
+<svg viewBox="0 0 900 534" width="900" height="534" xmlns="http://www.w3.org/2000/svg"
      font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
 
   <!-- Sized for GitHub's README column (~830px), not for a full-width screenshot. A wider
@@ -8,7 +8,7 @@
        No external font import: an SVG rendered as an image cannot load one, so every glyph
        position is an explicit coordinate rather than a text run the font metrics decide. -->
 
-  <rect width="900" height="580" fill="#0a0a0a"/>
+  <rect width="900" height="534" fill="#0a0a0a"/>
 
   <!-- ================================ window chrome ================================ -->
   <rect x="28" y="24" width="844" height="486" rx="10" fill="#141414" stroke="#2b2b2b" stroke-width="1"/>
@@ -64,9 +64,4 @@
     <text x="187" y="486" fill="#9a9a9a">gemma-4-26b-a4b-it-4bit</text>
   </g>
 
-  <!-- =================================== legend =================================== -->
-  <!-- Under the window rather than beside it: side notes were what forced the canvas wide
-       enough that GitHub had to shrink the type. -->
-  <text x="28" y="540" fill="#9a9a9a" font-size="13">The first line is your own status line, run untouched. Under it, one row per running dispatch —</text>
-  <text x="28" y="560" fill="#9a9a9a" font-size="13">each with its own elapsed time, turning amber at 5 minutes and red at 15. Four rows, then “… +N more”.</text>
 </svg>
