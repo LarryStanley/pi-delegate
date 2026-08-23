@@ -350,7 +350,7 @@ test("the breathing dot is a triangle ramp driven by the clock", () => {
   const brightness = (t) =>
     run(
       { "a.status": file(`pid=${LIVE} running=1 oldest=${t - 5} updated=${t} models=-`) },
-      { PI_DELEGATE_NOW: String(t) },
+      { PI_DELEGATE_NOW: String(t), COLORTERM: "truecolor" },
     ).match(/38;2;(\d+);/)?.[1];
 
   const cycle = Array.from({ length: 10 }, (_, i) => brightness(base + i));
@@ -395,13 +395,58 @@ test("a non-numeric pinned clock falls back to the real one instead of erroring"
   assert.ok(!/error|integer|expression/i.test(out), out);
 });
 
+// Note the pinned TERM and TERM_PROGRAM. `run` spreads process.env, so without them this
+// test inherits the TERM of whatever terminal happens to run the suite — and since TERM can
+// now select truecolor on its own, it would pass or fail depending on the developer's
+// terminal rather than on the code.
 test("a terminal without truecolor gets glyphs instead of an RGB escape", () => {
   const out = run(
     { "a.status": file(`pid=${LIVE} running=1 oldest=${NOW() - 5} updated=${NOW()} models=-`) },
-    { COLORTERM: "" },
+    { COLORTERM: "", TERM: "xterm-256color", TERM_PROGRAM: "" },
   );
   assert.ok(!out.includes("38;2;"), out);
   assert.match(out, /[·•●]/);
+});
+
+// Truecolor is what makes the dot breathe: 256 brightness levels on one glyph, against
+// three glyph steps at a constant dim. A 24-bit terminal that does not export COLORTERM to
+// its children therefore loses the feature, not a nicety — reported as "the breathing light
+// is gone" on Ghostty, which is 24-bit capable with TERM=xterm-ghostty and no COLORTERM.
+test("a 24-bit terminal is detected from TERM when COLORTERM is absent", () => {
+  const capable = [
+    "xterm-ghostty", "ghostty", "xterm-kitty", "alacritty", "wezterm",
+    "contour", "foot", "rio", "xterm-direct", "tmux-direct",
+  ];
+  for (const term of capable) {
+    const out = run(
+      { "a.status": file(`pid=${LIVE} running=1 oldest=${NOW() - 5} updated=${NOW()} models=-`) },
+      { COLORTERM: "", TERM: term, TERM_PROGRAM: "" },
+    );
+    assert.match(out, /38;2;\d+;/, `${term} should be truecolor`);
+  }
+});
+
+test("TERM_PROGRAM is a second chance, but Apple_Terminal is not 24-bit", () => {
+  const at = (env) =>
+    run({ "a.status": file(`pid=${LIVE} running=1 oldest=${NOW() - 5} updated=${NOW()} models=-`) },
+        { COLORTERM: "", TERM: "xterm-256color", ...env });
+  assert.match(at({ TERM_PROGRAM: "WezTerm" }), /38;2;\d+;/);
+  assert.match(at({ TERM_PROGRAM: "ghostty" }), /38;2;\d+;/);
+  // 256 colours only. Sending it RGB would be a downgrade, not an upgrade.
+  assert.ok(!at({ TERM_PROGRAM: "Apple_Terminal" }).includes("38;2;"));
+});
+
+// The failure mode the whitelist exists to prevent: an unknown terminal must NOT be sent
+// RGB escapes on the chance it copes. A terminal that cannot parse them prints
+// `[38;2;90;90;90m` as literal text across the status bar on every single redraw.
+test("an unrecognised terminal is not guessed into truecolor", () => {
+  for (const term of ["dumb", "vt100", "xterm", "screen", "linux", ""]) {
+    const out = run(
+      { "a.status": file(`pid=${LIVE} running=1 oldest=${NOW() - 5} updated=${NOW()} models=-`) },
+      { COLORTERM: "", TERM: term, TERM_PROGRAM: "" },
+    );
+    assert.ok(!out.includes("38;2;"), `${term || "(empty)"} should stay on the glyph path: ${out}`);
+  }
 });
 
 // ---------------------------------------------------------------- platform

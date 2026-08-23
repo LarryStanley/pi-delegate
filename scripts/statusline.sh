@@ -206,11 +206,43 @@ breathing_dot() {
   fi
 }
 
+# Truecolor is what makes the dot BREATHE. The basic path has three glyph steps at a
+# constant dim; the truecolor path is one glyph at 256 brightness levels, and only the
+# second reads as breathing at all. So a terminal misdetected as basic does not lose a
+# little polish — it loses the feature, and looks like a static dot that someone forgot to
+# animate. That was reported as "the breathing light is gone".
+#
+# `COLORTERM` is the right answer when it is there, but it is an unstandardised convention
+# that a terminal exports for its own shell — and it does not always survive the trip into
+# a child process spawned by an app, which is exactly what a status-line command is. Ghostty
+# is the case that surfaced this: 24-bit capable, `TERM=xterm-ghostty`, no `COLORTERM`.
+#
+# So `TERM` is consulted as a fallback, and deliberately as a WHITELIST rather than a guess.
+# Guessing wrong in the other direction prints `[38;2;90;90;90m` as literal text across the
+# bottom of someone's terminal on every redraw, which is far worse than a dim dot. Anything
+# not named here keeps the glyph path.
+#
+# Apple_Terminal is excluded on purpose: it is 256-colour only, and it is the reason this is
+# not just "any TERM_PROGRAM that looks like a modern terminal".
 color_mode() {
   case "$COLORTERM" in
-    truecolor|24bit) printf 'truecolor' ;;
-    *)               printf 'basic' ;;
+    truecolor|24bit) printf 'truecolor'; return ;;
   esac
+
+  # `*-direct` is the terminfo convention for a direct-colour entry (xterm-direct,
+  # tmux-direct, alacritty-direct …), so it is a statement of capability, not a brand.
+  case "$TERM" in
+    *-direct|*-truecolor)
+      printf 'truecolor'; return ;;
+    xterm-ghostty|ghostty|xterm-kitty|alacritty|wezterm|contour|foot|foot-extra|rio)
+      printf 'truecolor'; return ;;
+  esac
+
+  case "$TERM_PROGRAM" in
+    ghostty|WezTerm|iTerm.app|vscode) printf 'truecolor'; return ;;
+  esac
+
+  printf 'basic'
 }
 
 # The dot is identical on every row — its phase comes from the wall clock, not from a
