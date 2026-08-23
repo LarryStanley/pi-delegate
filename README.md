@@ -127,6 +127,29 @@ To make one hand-edit (a probe), run `/pi-delegate:probe` first for a one-time b
 | `pi_transcript` | Drill in only when the verdict isn't enough |
 | `pi_stats` | Check token usage |
 
+`pi_dispatch` also takes `resume_session_id` to continue an earlier dispatch instead of
+starting fresh — pi keeps the previous turns, which is what makes `/pi-delegate:discuss`
+a conversation rather than a question box.
+
+## Consulting pi instead of delegating to it
+
+Everything above hands pi characters you would otherwise type. These two do the opposite:
+pi writes nothing, and the output is its opinion.
+
+| Command | Purpose |
+|---|---|
+| `/pi-delegate:review [ref\|files]` | A second reviewer on a diff. pi writes structured findings; Claude then **checks each one against the code** and reports them as confirmed / false / undecided |
+| `/pi-delegate:discuss <question>` | Think a problem through over as many turns as it takes, with `resume_session_id` carrying the thread |
+
+Both are slash commands rather than MCP tools, deliberately. An MCP tool's schema is paid
+in every context whether or not it is ever called; a skill costs nothing until you invoke
+it. Review and discussion are things you start on purpose, so they belong on the side of
+that line that is free when idle.
+
+The review command does not fix anything it finds. Reviewing and fixing in one motion is
+how a wrong finding becomes a committed change — confirmed findings become a task book,
+and go back through a normal dispatch.
+
 ## How a dispatch works
 
 ![Sequence diagram of one pi_dispatch call followed by a mid-run pi_steer, showing Claude, the MCP server, a pi child, and the provider](docs/diagrams/dispatch-sequence.svg)
@@ -147,6 +170,8 @@ implemented.
 | `docs/superpowers/specs/2026-08-22-pi-delegate-plugin-design.md` | Design spec (historical) |
 | `docs/superpowers/plans/2026-08-22-pi-delegate-plugin.md` | Implementation plan (historical) |
 | `skills/delegating-to-pi/` | The dispatch discipline itself: the four-way split, task books, acceptance, model choice |
+| `skills/review/` | The second-opinion review flow, and why Claude adjudicates rather than relays |
+| `skills/discuss/` | Multi-turn consultation, and why replies are kept short |
 
 ## Development
 
