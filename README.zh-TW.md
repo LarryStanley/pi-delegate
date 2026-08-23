@@ -1,17 +1,19 @@
 <!-- 這份翻譯對應的 README.md 版本；用 `git hash-object README.md` 比對，不一樣就是落後了。
-     synced-with-blob: 8726f79de6d903c442cb51a11584af5579cf05dc -->
+     synced-with-blob: 6f96bb8f5f9bf86445c420fe073c26ee753eba72 -->
 
 # pi-delegate
 
 [English](README.md) · [繁體中文](README.zh-TW.md)
 
-在文件裡寫一條規則叫 Claude 把寫程式的工作交出去，這條規則撐不住：從這個 repo 自己的歷史來看，大約 80% 被 commit 的字元仍然是主模型打出來的。pi-delegate 把那段文字換成一個 hook —— Claude 繼續當 tech lead，負責寫任務書與判定，然後用本地的 [`pi`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) agent 來寫原始碼與測試。
+在 Claude Code 裡直接叫用本地的 [`pi`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) agent：Claude 寫任務書、驗收結果，pi 寫原始碼和測試。
 
 ![A Claude Code session: Claude reads the source, writes a task book, calls pi_dispatch, and three pi rows appear under the user's own status line with their elapsed times](docs/diagrams/statusline-mockup.svg)
 
 *Claude 讀程式碼並寫下契約；`pi_dispatch` 把要寫的部分交給 pi。狀態列下方的每一列代表這一個視窗的一次 dispatch，一列一個，當最後一個結束時就會消失。*
 
-dispatch 會送到你的 `pi` 目前已經指向的任何 provider 與 model；這個 plugin 不會綁定任何東西。在 `strict` 模式下，一個 `PreToolUse` hook 會拒絕 Claude 對既有產品原始碼進行自己的 `Write` 與 `Edit`，並叫它改用 dispatch。
+為什麼需要一個 plugin，而不是寫一條規則就好：在有那條規則的情況下，這個 repo 裡大約 80% 被 commit 的字元仍然是主模型自己打的。`strict` 模式下有一個 `PreToolUse` hook，會擋掉 Claude 自己對既有產品原始碼的 `Write` 和 `Edit`，叫它改用 dispatch。
+
+dispatch 會送到你的 `pi` 目前已經指向的任何 provider 與 model；這個 plugin 不會綁定任何東西。
 
 這條護欄有個洞，而且是刻意的：hook 只會比對 `Write` 與 `Edit`，所以同樣的修改如果透過 `Bash`（例如 `sed -i` 或 heredoc）進行，就永遠攔截不到。它擋的是你順手自己改檔案的習慣，不是有心人的繞道。
 
