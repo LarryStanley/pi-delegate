@@ -40,7 +40,7 @@ function stateFileFor(home) {
 function runHook(scriptPath, { cwd, home, stdin }) {
   return spawnSync(process.execPath, [scriptPath], {
     cwd,
-    env: { ...process.env, HOME: home },
+    env: { ...process.env, HOME: home, USERPROFILE: home },
     input: stdin,
     encoding: "utf8",
   });
@@ -171,7 +171,7 @@ test("soft-nudge: broken stdin JSON exits silently", () => {
 function runDoctorCheck({ cwd, home }) {
   return spawnSync(process.execPath, [DOCTOR_CHECK], {
     cwd,
-    env: { ...process.env, HOME: home },
+    env: { ...process.env, HOME: home, USERPROFILE: home },
     input: "",
     encoding: "utf8",
   });
