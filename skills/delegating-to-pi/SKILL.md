@@ -127,7 +127,7 @@ Use `/pi-delegate:probe` to get a one-time bypass for a probe.
 | `references/delegating-implementation.md` | Dispatching implementation — how to write the contract, two-stage dispatch, how to split work down to what pi can handle |
 | `references/task-books.md` | Writing a task book, when the output followed it exactly but is still wrong, or when the brief was written through a shell heredoc |
 | `references/verifying.md` | Acceptance review, or a second layer of review |
-| `references/choosing-models.md` | Timeouts with zero output, or choosing a model |
+| `references/choosing-models.md` | Timeouts with zero output, choosing a model, or reading the Arena.ai advisory in the SessionStart report |
 | `references/small-model-field-guide.md` | Shortlisting a new model, sizing hardware, or choosing a quantization — published guidance, to be verified rather than trusted |
 | `references/orchestration.md` | Fan-out, deciding concurrency width |
 | `references/diagnosing.md` | Wrong output and you're not sure what to adjust — a symptom lookup table |

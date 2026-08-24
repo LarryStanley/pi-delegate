@@ -3,6 +3,9 @@ import { readFileSync, existsSync } from "node:fs";
 import { checkModels } from "../src/doctor.mjs";
 import { getMode } from "../src/modes.mjs";
 import { loadConfig, loadPiDefaults, piModelsPath } from "../src/config.mjs";
+import { arenaReport } from "../src/arena-advice.mjs";
+import { refreshInBackground } from "../src/arena-refresh.mjs";
+import { loadSnapshot, isFresh } from "../scripts/arena-fetch.mjs";
 
 const modelsPath = piModelsPath();
 
@@ -49,6 +52,26 @@ if (cfg.__unreadable) {
 if (!ok) {
   lines.push(`WARNING: ${problems.length} problem(s) with the pi configuration. Run /pi-delegate:doctor for details:`);
   for (const problem of problems) lines.push(`  - [${problem.code}] ${problem.message}`);
+}
+
+// The Arena.ai advisory. A REPORT and nothing more — it names which of the models already in
+// models.json the leaderboard ranks, and never changes what a dispatch goes to (see the note
+// at the top of src/config.mjs on why this plugin does not pick models for people).
+//
+// Reading the snapshot is a file read, so it happens whatever arena_refresh says. Only the
+// FETCH is gated, and it is detached: nothing here waits on the network, because this hook
+// has a 10-second budget in hooks.json and blowing it would leave the snapshot un-updated
+// and silent about it.
+const arenaSnapshot = loadSnapshot();
+if (arenaSnapshot || config.arena_refresh) {
+  const report = arenaReport({
+    snapshot: arenaSnapshot,
+    modelsCfg: cfg,
+    fresh: isFresh(arenaSnapshot),
+    canRefresh: config.arena_refresh,
+  });
+  if (report.needsRefresh && config.arena_refresh) refreshInBackground();
+  lines.push(...report.lines);
 }
 
 // For the envelope shape see the note in hooks/soft-nudge.mjs: a top-level

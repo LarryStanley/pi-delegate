@@ -18,6 +18,7 @@
 // Usage:
 //   node scripts/arena-fetch.mjs            # fetch, write snapshot
 //   node scripts/arena-fetch.mjs --check    # for hooks; see exit codes below
+//   node scripts/arena-fetch.mjs --advice   # read-only: which ranked models you have
 //
 // Exit codes, the same in both modes:
 //   0  a usable, fresh snapshot is on disk — either within TTL (--check only) or just fetched
@@ -292,9 +293,27 @@ function failureExitCode(snapshot) {
 }
 
 const check = process.argv.includes("--check");
+const advice = process.argv.includes("--advice");
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMain) {
-  if (check) {
+  if (advice) {
+    // Reads only. Whether to go and refresh is the caller's call, so that "show me what I
+    // have" never turns into a network wait.
+    const { adviceTable } = await import("../src/arena-advice.mjs");
+    const { piModelsPath } = await import("../src/config.mjs");
+    // Same degradation as loadModels in hooks/doctor-check.mjs: an unreadable models.json
+    // means "no models configured", never a crash.
+    let modelsCfg = {};
+    try {
+      modelsCfg = JSON.parse(readFileSync(piModelsPath(), "utf8"));
+    } catch {
+      // Missing or unparseable; adviceTable will say nothing matched.
+    }
+    const existing = loadSnapshot();
+    for (const line of adviceTable({ snapshot: existing, modelsCfg })) console.log(line);
+    if (existing && !isFresh(existing)) console.log("\n(snapshot is stale — refresh with: node scripts/arena-fetch.mjs)");
+    process.exit(hasUsableRows(existing) ? 0 : 1);
+  } else if (check) {
     const existing = loadSnapshot();
     if (hasUsableRows(existing) && isFresh(existing)) {
       console.log(`arena snapshot fresh (${existing.fetchedAt}, ${existing.rows.length} models)`);
