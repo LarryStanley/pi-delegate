@@ -65,7 +65,7 @@ Use the MCP tools; don't assemble CLI commands by hand:
 | Tool | When to use it |
 |---|---|
 | `pi_dispatch` | Dispatch a task book. Defaults to `mode=async` — dispatch, keep working, collect later. `mode=sync` blocks, for when your next step depends on the result |
-| `pi_status` | Where it stands: elapsed and remaining time, writes, reads, tokens — and a `spinning` warning when it is rewriting one file over and over. Compact by default so it is cheap to poll; pass `verbose` when a poll looks wrong |
+| `pi_status` | Where it stands: elapsed and remaining time, writes, reads, tokens — plus `phase: "thinking"` while the model is mid-reasoning and a `stream_events` count that rises whenever the stream moves, and a `spinning` warning when it is rewriting one file over and over. Compact by default so it is cheap to poll; pass `verbose` when a poll looks wrong |
 | `pi_steer` | Interject mid-run when you notice it's heading the wrong way |
 | `pi_abort` | Abort. **Re-dispatch an aborted task unchanged; only rewrite the task book after a real failure** |
 | `pi_result` | Collect the verdict of an async dispatch |
@@ -98,6 +98,13 @@ need a second dispatch.
 **While it runs**: poll `pi_status`. It is deliberately compact — counts, not lists — because every reply stays in
 your context for the rest of the session. If it reports `spinning`, pi is rewriting the same file: `pi_steer` it, and
 size the next task larger.
+
+**A poll where nothing moved is not a stalled dispatch.** A long reasoning turn produces no tool calls and no
+finished message, so writes, reads, tokens and `current_tool` all legitimately sit still for minutes — measured:
+identical replies at 40s and 137s on a run that finished correctly at 290s. Two fields settle it without
+touching the transcript: `phase: "thinking"` says the model is mid-reasoning right now, and `stream_events`
+rises whenever the stream moves, so comparing it across two polls is a liveness test. Reach for `pi_transcript`
+to find out what pi is *doing*, never to find out *whether it is alive*.
 
 **Model choice**: leave it unspecified to use the user's own pi default model (`~/.pi/agent/settings.json`) —
 that is the right choice almost every time. Only switch it deliberately, via `pi_dispatch`'s `provider` / `model` parameters,
