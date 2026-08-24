@@ -11,6 +11,32 @@ For shortlisting a model you have not run yet — published reliability numbers,
 failure-compounding arithmetic that explains long-loop failures — see `small-model-field-guide.md`. That file is
 secondhand by design; this one is for what you verify yourself.
 
+## The Arena.ai advisory tells you what you have, not what to use
+
+SessionStart reports which of the models in `~/.pi/agent/models.json` the Arena.ai agent leaderboard ranks, and
+`node scripts/arena-fetch.mjs --advice` prints the whole table. Read it for what it is:
+
+**It ranks hosted models only.** The board measures agent sessions against priced APIs, so a local model —
+the entire premise of this plugin — is never on it. A purely local roster gets "none of the N ranked models are
+in your models.json", and that is the correct answer, not a missing feature. The advisory has nothing to say
+about Qwen vs. gemma; the rest of this file is how you answer that, by measuring.
+
+**A rank is not a recommendation, and it never changes a dispatch.** Nothing routes off this data —
+`src/config.mjs` explains why pi-delegate does not pick a provider/model on anyone's behalf. What the board can
+tell you that you cannot see by eye is narrower and genuinely useful: of the hosted models you already pay for,
+which one is ranked highest, and which is the cheapest that still scores above zero. A negative score means the
+model lost more often than it won; cheap and worse than nothing is not a saving.
+
+**A missing match usually means the board is ahead of you.** Matching is deliberately exact after
+normalisation, so `Claude Opus 5` never attaches itself to `claude-opus-4-8`. When the top of the board is
+absent from your table, the board is a generation ahead of your roster — which is information, and the reason
+not to soften the matching.
+
+Two dates are reported because they answer different questions: `fetched` is when the snapshot was pulled,
+`board` is when arena computed the numbers in it. Refreshing happens in a detached child process, never in the
+session's path; set `"arena_refresh": false` in `~/.claude/pi-delegate/config.json` to stop it fetching at all
+and keep reporting from whatever snapshot is on disk.
+
 ## Pick the harness first, then the model — this order cannot be reversed
 
 **The harness's weight determines which models can even work.** Same model, same task, same endpoint, only the harness changed:

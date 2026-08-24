@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { isProtectedPath, consumeProbe, normalizeRelSeparators } from "../src/guard.mjs";
 import { mkdtempSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 const CWD = "/proj";
 const guarded = (p) => isProtectedPath(p, { cwd: CWD, exists: () => true });
@@ -115,7 +115,14 @@ const HOME_SRC_ROOT = "/home/u/src/myproj";
 // markerExists models "the project root has a .git". exists answers "does this file exist"
 // — two different questions, hence two separate injection points (folding them into one
 // would make the tests' `exists: () => true` make every directory look like a project root).
-const hasGitAt = (root) => (p) => p === `${root}/.git`;
+// The candidate is built the way findProjectRoot builds it — resolve() then join() — rather
+// than by string-concatenating a forward slash. On Windows those differ twice over: resolve()
+// prefixes the current drive and join() uses a backslash, so the literal never matched, root
+// came back null, the cwd-inside-src fallback took over, and the whole tree looked protected.
+const hasGitAt = (root) => {
+  const marker = join(resolve(root), ".git");
+  return (p) => p === marker;
+};
 
 test("a project under ~/src/ no longer has its lib/ treated as protected (regression)", () => {
   assert.equal(

@@ -64,6 +64,11 @@ export const DEFAULTS = Object.freeze({
   pi_command: null,
   ...PLUGIN_DEFAULTS,
   drafter_patterns: Object.freeze([...DEFAULT_DRAFTER_PATTERNS]),
+  // Whether SessionStart may fetch the Arena.ai leaderboard when its snapshot has gone
+  // stale. On by default because the fetch is detached and costs the session nothing; set
+  // false on a metered connection or an air-gapped machine, and the report then falls back
+  // to whatever snapshot is already on disk.
+  arena_refresh: true,
 });
 
 export function configPath() {
@@ -122,6 +127,7 @@ export function loadConfig(file = configPath()) {
     drafter_patterns: Array.isArray(raw.drafter_patterns)
       ? raw.drafter_patterns.map(nonEmptyString).filter((p) => p !== null)
       : [...DEFAULTS.drafter_patterns],
+    arena_refresh: typeof raw.arena_refresh === "boolean" ? raw.arena_refresh : DEFAULTS.arena_refresh,
   };
 }
 

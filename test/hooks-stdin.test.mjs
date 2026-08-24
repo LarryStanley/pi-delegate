@@ -40,7 +40,7 @@ function stateFileFor(home) {
 function runHook(scriptPath, { cwd, home, stdin }) {
   return spawnSync(process.execPath, [scriptPath], {
     cwd,
-    env: { ...process.env, HOME: home },
+    env: { ...process.env, HOME: home, USERPROFILE: home },
     input: stdin,
     encoding: "utf8",
   });
@@ -171,7 +171,7 @@ test("soft-nudge: broken stdin JSON exits silently", () => {
 function runDoctorCheck({ cwd, home }) {
   return spawnSync(process.execPath, [DOCTOR_CHECK], {
     cwd,
-    env: { ...process.env, HOME: home },
+    env: { ...process.env, HOME: home, USERPROFILE: home },
     input: "",
     encoding: "utf8",
   });
@@ -244,6 +244,92 @@ test("doctor-check: a broken models.json degrades to a warning instead of killin
   assert.equal(out.hookSpecificOutput.hookEventName, "SessionStart");
   assert.match(out.hookSpecificOutput.additionalContext, /is not valid JSON/);
   assert.match(out.hookSpecificOutput.additionalContext, /pi-delegate mode: soft/);
+});
+
+// ---- [C3] the arena leaderboard advisory ----
+//
+// A REPORT, not a routing decision — see src/arena-advice.mjs. Both tests below seed a
+// state where the hook has no reason to refresh, so neither touches the network: the first
+// gives it a snapshot fetched just now, the second turns refreshing off. The refresh
+// mechanics have their own test in test/arena-refresh.test.mjs.
+
+function seedArena(home, { fetchedAt, rows }) {
+  const dir = join(home, ".claude", "pi-delegate");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "arena-snapshot.json"), JSON.stringify({
+    source: "https://arena.ai/leaderboard/agent",
+    fetchedAt,
+    leaderboardSnapshot: { lastUpdated: "2026-08-19T18:00:00.000Z", modelCount: rows.length },
+    rows,
+  }));
+}
+
+function seedModels(home, providers) {
+  mkdirSync(join(home, ".pi", "agent"), { recursive: true });
+  writeFileSync(join(home, ".pi", "agent", "models.json"), JSON.stringify({ providers }));
+}
+
+const BOARD = [
+  { rank: 1, model: "Claude Opus 5 (High)", organization: "Anthropic", score: 0.12, ci: 0.01, inputPricePerMillion: 5, outputPricePerMillion: 25, sessions: 10 },
+  { rank: 19, model: "GPT 5.6 Luna (xHigh)", organization: "OpenAI", score: 0.04, ci: 0.01, inputPricePerMillion: 0.2, outputPricePerMillion: 1.2, sessions: 10 },
+];
+
+test("doctor-check: reports which ranked models you actually have", () => {
+  const project = tmpProject();
+  const home = tmpHome();
+  setMode(project, "soft", stateFileFor(home));
+  seedArena(home, { fetchedAt: new Date().toISOString(), rows: BOARD });
+  seedModels(home, { litellm: { models: [{ id: "gpt-5.6-luna", name: "GPT-5.6 Luna" }] } });
+
+  const result = runDoctorCheck({ cwd: project, home });
+
+  assert.equal(result.status, 0, `the hook must not exit non-zero: ${result.stderr}`);
+  const context = JSON.parse(result.stdout).hookSpecificOutput.additionalContext;
+  assert.match(context, /arena leaderboard/);
+  assert.match(context, /1 of 2/);
+  assert.match(context, /litellm\/gpt-5\.6-luna/);
+  // The board's leader is a generation ahead of this roster and must not be claimed as a pick.
+  assert.doesNotMatch(context, /Claude Opus 5/);
+  // The advisory is an addition, not a replacement.
+  assert.match(context, /pi-delegate mode: soft/);
+});
+
+// Someone on a metered connection, or an air-gapped machine, gets to turn the fetching off
+// — and then the hook must say nothing about arena at all rather than advertising a snapshot
+// it is never going to have.
+test("doctor-check: says nothing about arena when refreshing is off and there is no snapshot", () => {
+  const project = tmpProject();
+  const home = tmpHome();
+  setMode(project, "soft", stateFileFor(home));
+  mkdirSync(join(home, ".claude", "pi-delegate"), { recursive: true });
+  writeFileSync(join(home, ".claude", "pi-delegate", "config.json"), JSON.stringify({ arena_refresh: false }));
+
+  const result = runDoctorCheck({ cwd: project, home });
+
+  assert.equal(result.status, 0);
+  const context = JSON.parse(result.stdout).hookSpecificOutput.additionalContext;
+  assert.doesNotMatch(context, /arena/i);
+  assert.match(context, /pi-delegate mode: soft/);
+});
+
+// An existing snapshot is a file on disk: reading it costs nothing and stays useful even
+// with refreshing turned off, so the report is kept and only the fetching stops.
+test("doctor-check: still reports a snapshot it already has when refreshing is off", () => {
+  const project = tmpProject();
+  const home = tmpHome();
+  setMode(project, "soft", stateFileFor(home));
+  seedArena(home, { fetchedAt: "2020-01-01T00:00:00.000Z", rows: BOARD });
+  seedModels(home, { litellm: { models: [{ id: "gpt-5.6-luna" }] } });
+  writeFileSync(join(home, ".claude", "pi-delegate", "config.json"), JSON.stringify({ arena_refresh: false }));
+
+  const result = runDoctorCheck({ cwd: project, home });
+
+  assert.equal(result.status, 0);
+  const context = JSON.parse(result.stdout).hookSpecificOutput.additionalContext;
+  assert.match(context, /arena leaderboard/);
+  assert.match(context, /stale/);
+  // It may not promise a background refresh it was told not to start.
+  assert.doesNotMatch(context, /refreshing in the background/);
 });
 
 // ---- the mode belongs to the FILE's project, not to the session's cwd ----
