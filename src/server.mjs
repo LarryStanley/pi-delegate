@@ -135,7 +135,11 @@ export const TOOL_DEFINITIONS = [
     description:
       "Check where a dispatch stands right now — running or finished, elapsed and remaining time, writes and " +
       "reads so far, tokens spent, and a `spinning` warning when it is rewriting the same file over and over. " +
-      "Cheap enough to poll while you get on with something else.",
+      "Cheap enough to poll while you get on with something else. " +
+      "Two fields answer \"is this alive?\", which the counters alone cannot: `phase: \"thinking\"` means the " +
+      "model is mid-reasoning, and `stream_events` rises whenever the stream moves. A long reasoning turn " +
+      "produces no tool calls and no finished message, so writes, reads and tokens all legitimately sit still " +
+      "for minutes — compare stream_events across two polls rather than reading pi_transcript to find out.",
     inputSchema: {
       type: "object",
       properties: {

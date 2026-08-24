@@ -281,6 +281,34 @@ export function collapseRepeats(paths = []) {
   return formatWriteCounts([...counts].map(([path, count]) => ({ path, count })));
 }
 
+// What the model is doing between tool calls.
+//
+// Every other number in a running pi_status comes from an event a long reasoning turn does
+// not produce: totalUsage sums message_end, the write and read counts come from tool
+// events, and current_tool is null because no tool is running. So a dispatch thinking hard
+// and a dispatch that has wedged report identical JSON — measured on a real run, unchanged
+// between 40s and 137s while the model reasoned its way to a correct answer at 290s.
+//
+// The stream says otherwise the whole time. message_update carries an assistantMessageEvent
+// (see updateWithUsage in verdict.test.mjs for the verified shape), and its type names what
+// is being streamed. Reading the last one turns "no numbers moved" into "no numbers moved
+// BECAUSE it is thinking", which is the distinction the caller actually needs.
+//
+// The scan stops at message_end rather than running to the start of the array: the newest
+// thinking_delta anywhere would still be found minutes after the turn that produced it had
+// finished, latching "thinking" on for the rest of the run. That is wrong in the same
+// direction as the bug this replaces, and harder to doubt, because a positive signal reads
+// as evidence in a way an absent one does not.
+export function streamPhase(events) {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i];
+    if (event?.type === "message_end" || event?.type === "tool_execution_start") return null;
+    if (event?.type !== "message_update") continue;
+    if (event.assistantMessageEvent?.type === "thinking_delta") return "thinking";
+  }
+  return null;
+}
+
 // What pi_status reports for a dispatch still in flight. Its job is to answer one question
 // a bare "running" cannot: is this moving forward, or going in circles?
 // Compact by default. pi_status exists to be called repeatedly while a dispatch runs, and
@@ -299,7 +327,15 @@ export function progressSummary(events, { verbose = false } = {}) {
     distinct_files: counts.length,
     reads: readPaths(events).length,
     tokens: totalUsage(events),
+    // Not a number anyone reads on its own — it is the difference between two polls that
+    // means something. Every other counter here can legitimately sit still for minutes
+    // while the model reasons, so none of them separates slow from stopped; this one moves
+    // whenever the stream does. One integer, and it retires the pi_transcript call that
+    // answering "is it alive?" used to need.
+    stream_events: events.length,
   };
+  const phase = streamPhase(events);
+  if (phase) summary.phase = phase;
   if (repeated.length > 0) {
     summary.spinning =
       `Rewriting ${repeated.map((r) => `${r.path} (x${r.count})`).join(", ")} — usually a task with ` +

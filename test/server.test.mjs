@@ -326,7 +326,13 @@ test("pi_status returns running / the tool in progress / files already written f
     distinct_files: 2,
     reads: 0,
     tokens: { input: 0, output: 0 },
+    // One integer, and the only field here that is guaranteed to move while the model
+    // reasons — see test/thinking-visibility.test.mjs for what its absence cost.
+    stream_events: 3,
   });
+  // No `phase`: the newest event is a tool call in flight, which current_tool already
+  // reports. Absent rather than "idle" — an empty field is still paid for on every poll.
+  assert.ok(!("phase" in parsed));
 
   const verbose = JSON.parse((await handlers.pi_status({ session_id: sessionId, verbose: true })).content[0].text);
   assert.deepEqual(verbose.files_touched, ["a.ts", "b.ts"]);
