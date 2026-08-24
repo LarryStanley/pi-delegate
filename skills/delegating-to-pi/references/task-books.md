@@ -144,8 +144,15 @@ a workaround for a workaround, with the same class of fragility one layer down.
 
 **Write the brief with the Write tool.** Its content crosses as a JSON payload over stdio: the shell never
 sees a byte of it, so there is no delimiter, no quoting layer, and no CJK codepage to break it. And in
-`strict` mode there is no reason to route around it — the guard exempts `.md` unconditionally
-(`src/guard.mjs`), so the Write on a task book is never blocked. The heredoc is habit, not necessity.
+`strict` mode there is almost never a guard to route around: the built-in heuristic exempts `.md` outright
+(`EXEMPT_EXTENSIONS` in `src/guard.mjs`), and a brand-new file is allowed on every path. The heredoc is
+habit, not necessity.
+
+The one case to know about: in a surveyed project the policy branch returns *before* the extension
+exemption is consulted (`isProtectedPath` in `src/guard.mjs`), so re-writing an **existing** book whose path
+its `protect` globs cover — a book living under `docs/**`, say — is denied. That is an argument for keeping
+task books outside the protected tree, not for reaching back for the heredoc; `/pi-delegate:probe` is the
+bypass if the book has to live there.
 
 The symptom of a corrupted-in-transit brief — output follows the brief exactly, and is still wrong — is
 **indistinguishable from a wrong brief** (the table in the next section). The fix is to re-write the file
