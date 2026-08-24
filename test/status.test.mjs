@@ -1,9 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, existsSync, writeFileSync, chmodSync, mkdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, existsSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { renderStatus, writeStatus, clearStatus, statusFilePath, ownerToken } from "../src/status.mjs";
+import { unwritablePath } from "../fixtures/unwritable-path.mjs";
 
 // Line 1 is the facts the reader parses; line 2 is the owner, alone, so a socket path
 // containing a space cannot be mistaken for a field.
@@ -158,12 +159,9 @@ test("clearStatus on a file that is not there is not an error", () => {
 // Same standing as appendEventsLog after issues/1: this is decoration, and decoration may
 // never be allowed to take down the thing it decorates. An unwritable path returns false.
 test("writeStatus never throws on an unwritable path", () => {
-  const base = dir();
-  const locked = join(base, "locked");
-  mkdirSync(locked);
-  chmodSync(locked, 0o500);
-  assert.equal(writeStatus([], { path: join(locked, "s.status") }), false);
-  chmodSync(locked, 0o700);
+  const { path, dir: blocked } = unwritablePath("s.status");
+  assert.equal(writeStatus([], { path }), false);
+  rmSync(blocked, { recursive: true, force: true });
 });
 
 test("statusFilePath is keyed per session, so two sessions never share a file", () => {

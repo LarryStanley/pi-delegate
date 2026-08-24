@@ -239,7 +239,18 @@ test("the child staying alive after agent_end (real pi RPC behavior) must still 
 // behaviour is unchanged and already covered by the unrelated "abort
 // returns an aborted verdict" test above, which uses --hang and never triggers a
 // terminal event at all).
-test("calling abort() after the terminal event has already settled: the settled mutual-exclusion gate must block a second SIGTERM", async () => {
+// Both SIGTERM-counting tests below observe the signal from inside the child, via fake-pi's
+// --sigterm-log handler. That mechanism has no Windows equivalent: a signal aimed at another
+// process there is TerminateProcess, so the child dies without its handler ever running and
+// the log file is never created (the failure shows up as ENOENT on the read). Nor is there a
+// consequence to observe from the parent side — the first "SIGTERM" already killed the child,
+// so a second one would be a no-op whether the gate holds or not. Skipped rather than
+// weakened; the gate itself is platform-independent code and stays covered on POSIX.
+const countsSigterms = process.platform === "win32"
+  ? { skip: "counting SIGTERMs needs a child-side signal handler, which Windows does not deliver" }
+  : {};
+
+test("calling abort() after the terminal event has already settled: the settled mutual-exclusion gate must block a second SIGTERM", countsSigterms, async () => {
   const { dir, file } = tmpTask();
   const logDir = mkdtempSync(join(tmpdir(), "pi-sigterm-"));
   const sigtermLog = join(logDir, "sigterm.log");
@@ -352,7 +363,7 @@ test("when pi is not on PATH, the verdict is failed and still carries a stderr c
 
 // --- [I6] the settled mutual-exclusion gate must also hold on the timeout path ---
 
-test("when the terminal event arrives after the timeout, a second SIGTERM is not sent", async () => {
+test("when the terminal event arrives after the timeout, a second SIGTERM is not sent", countsSigterms, async () => {
   const { dir, file } = tmpTask();
   const logDir = mkdtempSync(join(tmpdir(), "pi-sigterm-late-"));
   const sigtermLog = join(logDir, "sigterm.log");

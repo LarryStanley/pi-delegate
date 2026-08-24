@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { formatFatal, recordFatal, installFatalLog } from "../src/fatal-log.mjs";
+import { unwritablePath } from "../fixtures/unwritable-path.mjs";
 
 // The second half of the peer report: when the server went, the ONLY signal was that the
 // tools disappeared from the tool list. No exit code, no stderr, nothing in events.log.
@@ -62,7 +63,9 @@ test("recordFatal appends rather than truncating an existing log", () => {
 // can throw, it converts a logged crash into an unlogged one — and on a full volume, the
 // write it is trying to make is exactly the write that fails.
 test("recordFatal never throws, whatever the path is", () => {
-  assert.equal(recordFatal("uncaughtException", new Error("x"), { path: "/proc/nope/events.log", pid: 1 }), false);
+  const { path, dir: blocked } = unwritablePath("events.log");
+  assert.equal(recordFatal("uncaughtException", new Error("x"), { path, pid: 1 }), false);
+  rmSync(blocked, { recursive: true, force: true });
   assert.equal(recordFatal("uncaughtException", new Error("x"), { path: "", pid: 1 }), false);
 });
 

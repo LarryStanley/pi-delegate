@@ -1,10 +1,11 @@
-import { test } from "node:test";
+import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { writeFileSync } from "node:fs";
+import { writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { createToolHandlers } from "../src/server.mjs";
+import { unwritablePath } from "../fixtures/unwritable-path.mjs";
 
 // github.com/LarryStanley/pi-delegate/issues/1
 //
@@ -35,9 +36,12 @@ function tmpTask() {
   return path;
 }
 
-// A directory that cannot exist: mkdirSync throws ENOTDIR, exactly as a bad path on
-// Windows would.
-const IMPOSSIBLE = "/dev/null/impossible/events.log";
+// A log path that cannot be written. The comment here used to claim "/dev/null/impossible"
+// behaved this way on Windows too; it does not — that path is creatable there, so the write
+// succeeded and the test asserted a failure that never happened.
+const impossible = unwritablePath("events.log");
+const IMPOSSIBLE = impossible.path;
+after(() => rmSync(impossible.dir, { recursive: true, force: true }));
 
 function setup(logPath) {
   return createToolHandlers({

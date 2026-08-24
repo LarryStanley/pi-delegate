@@ -45,11 +45,24 @@ test("Windows gets a named pipe, not a filesystem path", () => {
   assert.match(path, /^\\\\[.]\\pipe\\/);
 });
 
+// The live tests below bind a real server, so the address has to be one the platform can
+// actually bind. A ".sock" file path is not that on Windows — there are no socket files
+// there and listen() fails EACCES — which is exactly why socketPathFor exists and returns a
+// named pipe for win32. Asking it for the address instead of hand-rolling one keeps these
+// tests on the same address the product would use.
 function tmpSock() {
   const dir = join(tmpdir(), randomUUID().slice(0, 8));
   mkdirSync(dir, { recursive: true });
-  return join(dir, "n.sock");
+  return socketPathFor(randomUUID().replace(/-/g, ""), process.platform, dir);
 }
+
+// A leftover socket FILE is a POSIX-only failure mode: a named pipe lives in its own
+// namespace and goes with the process that created it, so there is nothing to leave behind
+// and reclaimIfStale returns early for a pipe address. Skipped rather than adapted — the
+// behaviour under test does not exist on Windows.
+const posixOnly = process.platform === "win32"
+  ? { skip: "socket files (and therefore stale ones) do not exist on Windows" }
+  : {};
 
 const once = (emitter, event) => new Promise((r) => emitter.once(event, r));
 
@@ -96,7 +109,7 @@ test("broadcasting with nobody connected does not throw", async () => {
 // A crashed server leaves its socket file behind and the next listen() fails EADDRINUSE —
 // which would mean no notifications for the whole session, silently. The only safe way to
 // tell a stale socket from a live one is to try connecting to it.
-test("a stale socket file left by a dead server is reclaimed", async () => {
+test("a stale socket file left by a dead server is reclaimed", posixOnly, async () => {
   const path = tmpSock();
   writeFileSync(path, "");
   assert.ok(existsSync(path));
