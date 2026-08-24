@@ -134,6 +134,22 @@ Create <output-file>, for <purpose>.
 Final output: DONE <count>
 ```
 
+### The brief itself crosses a channel — write it with the Write tool, never a Bash heredoc
+
+The task book is a contract, and it travels. The failure mode here is not the one above: the brief is
+corrupted **in transit, before the model ever reads it**, and the model then faithfully builds exactly what
+the corrupted bytes say. Measured (2026-08-24): a CJK brief full of backticks and quotes, written through a
+Git-Bash heredoc, broke on the backtick/quote mix; the workaround (a Python writer) was *still* a heredoc —
+a workaround for a workaround, with the same class of fragility one layer down.
+
+**Write the brief with the Write tool.** Its content crosses as a JSON payload over stdio: the shell never
+sees a byte of it, so there is no delimiter, no quoting layer, and no CJK codepage to break it. And in
+`strict` mode there is no reason to route around it — the guard exempts `.md` unconditionally
+(`src/guard.mjs`), so the Write on a task book is never blocked. The heredoc is habit, not necessity.
+
+The symptom of a corrupted-in-transit brief — output follows the brief exactly, and is still wrong — is
+**indistinguishable from a wrong brief** (the table in the next section). The fix is to re-write the file
+through the Write tool and verify the bytes on disk, not to switch models or add wording.
 
 ### Mentioning an exception in a task book with "no exceptions" creates one anyway
 

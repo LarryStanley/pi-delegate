@@ -125,7 +125,7 @@ Use `/pi-delegate:probe` to get a one-time bypass for a probe.
 | File | When to read it |
 |---|---|
 | `references/delegating-implementation.md` | Dispatching implementation — how to write the contract, two-stage dispatch, how to split work down to what pi can handle |
-| `references/task-books.md` | Writing a task book, or when the output followed it exactly but is still wrong |
+| `references/task-books.md` | Writing a task book, when the output followed it exactly but is still wrong, or when the brief was written through a shell heredoc |
 | `references/verifying.md` | Acceptance review, or a second layer of review |
 | `references/choosing-models.md` | Timeouts with zero output, or choosing a model |
 | `references/small-model-field-guide.md` | Shortlisting a new model, sizing hardware, or choosing a quantization — published guidance, to be verified rather than trusted |
